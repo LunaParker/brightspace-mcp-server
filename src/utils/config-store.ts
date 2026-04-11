@@ -11,6 +11,13 @@ import * as os from "node:os";
 /** JSON schema for ~/.brightspace-mcp/config.json */
 export interface ConfigStoreData {
   baseUrl?: string;
+  /**
+   * SSO provider to use for the auth flow.
+   * - "entra": headed Microsoft Entra ID login (manual). Default in this fork.
+   * - "purdue": upstream Purdue Shibboleth automation.
+   * - "manual": generic manual flow with no IdP-specific hooks.
+   */
+  ssoProvider?: "entra" | "purdue" | "manual";
   username?: string;
   password?: string;
   sessionDir?: string;

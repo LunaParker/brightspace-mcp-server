@@ -6,8 +6,31 @@
 
 import * as path from "node:path";
 import * as os from "node:os";
-import type { AppConfig } from "../types/index.js";
+import type { AppConfig, SsoProvider } from "../types/index.js";
 import { configStoreExists, loadConfigStore } from "./config-store.js";
+
+/**
+ * Default SSO provider. This fork targets headed Microsoft Entra ID SSO,
+ * which is the common authentication path for Canadian post-secondary
+ * Brightspace tenants. The upstream Purdue Shibboleth automation is still
+ * available via ssoProvider="purdue".
+ */
+const DEFAULT_SSO_PROVIDER: SsoProvider = "entra";
+
+/** Default token TTL per provider (seconds). Entra installations typically
+ *  enforce a 7-day manual re-auth window via conditional access. */
+const DEFAULT_TOKEN_TTL_BY_PROVIDER: Record<SsoProvider, number> = {
+  entra: 7 * 24 * 60 * 60, // 7 days
+  purdue: 3600, // 1 hour (upstream default)
+  manual: 7 * 24 * 60 * 60, // 7 days
+};
+
+function parseSsoProvider(raw: string | undefined): SsoProvider | undefined {
+  if (!raw) return undefined;
+  const v = raw.toLowerCase();
+  if (v === "entra" || v === "purdue" || v === "manual") return v;
+  return undefined;
+}
 
 export function loadConfig(): AppConfig {
   const store = configStoreExists() ? loadConfigStore() : null;
@@ -25,16 +48,25 @@ export function loadConfig(): AppConfig {
       ? expandTilde(store.sessionDir)
       : path.join(os.homedir(), ".d2l-session");
 
-  // Resolve headless: env > store > default (false)
-  let headless = store?.headless ?? false;
+  // Resolve ssoProvider: env > store > default
+  const ssoProvider: SsoProvider =
+    parseSsoProvider(process.env.D2L_SSO_PROVIDER) ??
+    parseSsoProvider(store?.ssoProvider) ??
+    DEFAULT_SSO_PROVIDER;
+
+  // Resolve headless: env > store > provider default
+  // Entra/manual providers must run headed — the user has to type their
+  // credentials themselves. Purdue defaults to whatever is configured.
+  const providerDefaultHeadless = ssoProvider === "entra" || ssoProvider === "manual" ? false : false;
+  let headless = store?.headless ?? providerDefaultHeadless;
   if (process.env.D2L_HEADLESS !== undefined) {
     headless = process.env.D2L_HEADLESS === "true";
   }
 
-  // Resolve tokenTtl: env > store > default (3600)
+  // Resolve tokenTtl: env > store > provider default
   const tokenTtl = process.env.D2L_TOKEN_TTL
     ? parseInt(process.env.D2L_TOKEN_TTL, 10)
-    : store?.tokenTtl ?? 3600;
+    : store?.tokenTtl ?? DEFAULT_TOKEN_TTL_BY_PROVIDER[ssoProvider];
 
   // Resolve includeCourseIds: env > store > undefined
   const includeCourseIds = process.env.D2L_INCLUDE_COURSES
@@ -57,6 +89,7 @@ export function loadConfig(): AppConfig {
     sessionDir,
     tokenTtl,
     headless,
+    ssoProvider,
     username: process.env.D2L_USERNAME || store?.username,
     password: process.env.D2L_PASSWORD || store?.password,
     courseFilter: {

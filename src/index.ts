@@ -35,6 +35,8 @@ if (subcommand === 'setup') {
   await import('./setup.js');
 } else if (subcommand === 'auth') {
   await import('./auth-cli.js');
+} else if (subcommand === 'entra-auth') {
+  await import('./entra-auth-cli.js');
 } else {
   // ── MCP Server (default) ────────────────────────────────────────────
 
@@ -60,23 +62,49 @@ if (subcommand === 'setup') {
       });
       log("INFO", "");
       log("INFO", "========================================");
-      log("INFO", "  Brightspace MCP Server v1.1.2");
-      log("INFO", "  By Rohan Muppa — ECE @ Purdue");
-      log("INFO", "  github.com/rohanmuppa/brightspace-mcp-server");
+      log("INFO", "  Brightspace MCP Server — Entra ID fork");
+      log("INFO", `  SSO provider: ${config.ssoProvider}`);
+      log("INFO", `  Brightspace:  ${config.baseUrl}`);
+      log("INFO", "  Upstream: github.com/rohanmuppa/brightspace-mcp-server");
       log("INFO", "========================================");
       log("INFO", "");
 
       // Create TokenManager for reading cached tokens
       const tokenManager = new TokenManager(config.sessionDir);
 
-      // Create AuthRunner for auto-reauthentication
+      // Create AuthRunner for auto-reauthentication. This is only safe to
+      // invoke from a real terminal (the Purdue flow). Under Entra/manual,
+      // the auth flow requires a visible Chromium window that the user can
+      // actually interact with, which is not possible when the MCP server
+      // is spawned by Claude Desktop — there is no tty and no way to show
+      // UI. In that case we skip auto-reauth and return a crystal-clear
+      // error to the user instead.
       const authRunner = new AuthRunner();
+      const canAutoReauth = config.ssoProvider === "purdue";
+      const reauthCommand =
+        config.ssoProvider === "entra"
+          ? "brightspace-entra-auth"
+          : "brightspace-auth";
+      const authExpiredMessage =
+        config.ssoProvider === "entra" || config.ssoProvider === "manual"
+          ? `Brightspace session expired. Re-authentication cannot run inside Claude Desktop because it requires a visible browser window. Open a terminal and run \`${reauthCommand}\` to sign in again, then retry this tool.`
+          : "Session expired. Please re-authenticate via brightspace-auth.";
 
       // Create D2L API Client with auto-reauth support
       const apiClient = new D2LApiClient({
         baseUrl: config.baseUrl,
         tokenManager,
-        onAuthExpired: () => authRunner.run(),
+        authExpiredMessage,
+        onAuthExpired: async () => {
+          if (canAutoReauth) {
+            return authRunner.run();
+          }
+          log(
+            "WARN",
+            `onAuthExpired: ssoProvider=${config.ssoProvider} — skipping auto-reauth (interactive browser required). User must run \`${reauthCommand}\` in a terminal.`
+          );
+          return false;
+        },
       });
 
       // Initialize API client (discover API versions)
@@ -99,7 +127,7 @@ if (subcommand === 'setup') {
           title: "Check Authentication Status",
           description:
             "Check if you are authenticated with Brightspace. " +
-            "Run the brightspace-auth CLI first to authenticate. " +
+            `Run the ${reauthCommand} CLI first to authenticate. ` +
             "Use this when the user asks if they're logged in, if authentication is working, " +
             "or when other tools return auth errors.",
         },
@@ -108,40 +136,64 @@ if (subcommand === 'setup') {
 
           let token = await tokenManager.getToken();
 
-          if (!token) {
-            log("INFO", "check_auth: No valid token, attempting auto-reauthentication...");
-
+          if (!token && canAutoReauth) {
+            log(
+              "INFO",
+              "check_auth: No valid token, attempting auto-reauthentication..."
+            );
             const success = await authRunner.run();
             if (success) {
               token = await tokenManager.getToken();
             }
-
-            if (!token) {
-              log("INFO", "check_auth: Auto-reauthentication failed or produced no valid token");
-
-              const content: Array<{ type: "text"; text: string }> = [
-                {
-                  type: "text",
-                  text: "Not authenticated. Auto-reauthentication was attempted but failed. " +
-                    "Please run `brightspace-auth` manually in your terminal to log in. " +
-                    "Make sure your credentials in .env are correct and your internet connection is stable.",
-                },
-              ];
-              const notice = getUpdateNotice();
-              if (notice) content.push({ type: "text", text: notice });
-              return { content };
+            if (token) {
+              log("INFO", "check_auth: Auto-reauthentication succeeded");
             }
-
-            log("INFO", "check_auth: Auto-reauthentication succeeded");
           }
 
-          const expiresIn = Math.round((token.expiresAt - Date.now()) / 1000 / 60);
-          log("INFO", `check_auth: Token valid, expires in ~${expiresIn} minutes`);
+          if (!token) {
+            log("INFO", "check_auth: No valid token available");
+
+            const reason = canAutoReauth
+              ? "Auto-reauthentication was attempted but failed."
+              : `Auto-reauthentication is disabled for ssoProvider="${config.ssoProvider}" — the sign-in flow needs a visible browser window and cannot run inside Claude Desktop.`;
+            const instructions = canAutoReauth
+              ? `Please run \`${reauthCommand}\` manually in your terminal to log in. Make sure your credentials in .env are correct and your internet connection is stable.`
+              : `Open a terminal and run \`${reauthCommand}\`. A Chromium window will open — sign in with your organization account (username, password, MFA), wait for Brightspace to load, and then re-run this tool.`;
+
+            const content: Array<{ type: "text"; text: string }> = [
+              {
+                type: "text",
+                text: `Not authenticated with Brightspace. ${reason} ${instructions}`,
+              },
+            ];
+            const notice = getUpdateNotice();
+            if (notice) content.push({ type: "text", text: notice });
+            return { content };
+          }
+
+          const now = Date.now();
+          const expiresInMs = token.expiresAt - now;
+          const expiresInMinutes = Math.round(expiresInMs / 1000 / 60);
+          const expiresInDays = expiresInMs / 1000 / 86400;
+          log(
+            "INFO",
+            `check_auth: Token valid, expires in ~${expiresInMinutes} minutes`
+          );
+
+          // Friendlier expiry phrasing for the multi-day Entra window
+          let expiryPhrase: string;
+          if (expiresInDays >= 1.5) {
+            expiryPhrase = `~${Math.round(expiresInDays)} days (until ${new Date(token.expiresAt).toISOString()})`;
+          } else if (expiresInMinutes >= 90) {
+            expiryPhrase = `~${Math.round(expiresInMinutes / 60)} hours`;
+          } else {
+            expiryPhrase = `~${expiresInMinutes} minutes`;
+          }
 
           const content: Array<{ type: "text"; text: string }> = [
             {
               type: "text",
-              text: `Authenticated with Brightspace. Token expires in ~${expiresIn} minutes. Source: ${token.source}.`,
+              text: `Authenticated with Brightspace at ${config.baseUrl}. Provider: ${config.ssoProvider}. Session expires in ${expiryPhrase}. Source: ${token.source}. When it expires, run \`${reauthCommand}\` in a terminal to renew.`,
             },
           ];
           const notice = getUpdateNotice();

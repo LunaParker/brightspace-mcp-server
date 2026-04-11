@@ -8,6 +8,7 @@
   "bin": {
     "brightspace-mcp-server": "build/index.js",
     "brightspace-auth": "build/auth-cli.js",
+    "brightspace-entra-auth": "build/entra-auth-cli.js",
     "brightspace-setup": "build/setup.js"
   },
   "files": [
@@ -20,6 +21,7 @@
     "prepublishOnly": "npm run build",
     "start": "node build/index.js",
     "auth": "node build/auth-cli.js",
+    "entra-auth": "node build/entra-auth-cli.js",
     "update": "node build/update.js",
     "dev": "tsc --watch",
     "test": "vitest",

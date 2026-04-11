@@ -1,150 +1,182 @@
-# Brightspace MCP Server
+# Brightspace MCP Server — Entra ID SSO Fork
 
-> **By [Rohan Muppa](https://github.com/rohanmuppa), ECE @ Purdue**
+This is a local fork of [RohanMuppa/brightspace-mcp-server][upstream] adapted for
+Brightspace (D2L) installations that delegate authentication to **Microsoft
+Entra ID** (Azure AD) — notably most Canadian post-secondary Brightspace
+tenants, where organization policy typically enforces weekly interactive
+re-authentication with MFA.
 
-Talk to your Brightspace courses with AI. Ask about grades, due dates, announcements, and more. Works with Claude, ChatGPT, Cursor, and Windsurf.
+[upstream]: https://github.com/RohanMuppa/brightspace-mcp-server
 
-This is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that connects your AI to D2L Brightspace so it can pull your grades, assignments, syllabus, and course content on demand.
+The upstream project is written against Purdue's Shibboleth/Duo SSO. It has
+hard-coded references to Purdue's identity provider and a hardcoded
+`handleCampusSelector()` in the auth flow that hijacks any `/d2l/login` URL
+and points it at `idp.purdue.edu`. That is fine at Purdue, but it breaks at
+every other institution.
 
-Works with any school that uses D2L Brightspace, including Purdue, USC, and hundreds more.
+## What this fork changes
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/RohanMuppa/brightspace-mcp-server/main/docs/how-it-works.svg" alt="Architecture diagram" width="100%">
-</p>
+1. **New SSO provider abstraction** (`SSOProviderFlow`). The existing
+   `PurdueSSOFlow` is now one implementation of that interface, and a new
+   `EntraSSOFlow` is added for headed Microsoft Entra ID login.
+2. **`ssoProvider` config field**, selecting between:
+   - `"entra"` — headed Microsoft Entra ID login, **default in this fork**.
+   - `"purdue"` — upstream Purdue Shibboleth automation.
+   - `"manual"` — generic manual login with no IdP-specific hooks.
+3. **Provider selection in `BrowserAuth`** — no more hardcoded Purdue
+   references in the common auth path.
+4. **Robust redirect detection in `navigateAndLogin()`**. Many Brightspace
+   tenants serve a tiny JS stub at `/d2l/home` that immediately calls
+   `window.location.replace('/d2l/login...')`. The upstream code checked
+   `page.url()` too early and thought it was already authenticated. The
+   new flow waits for the URL to settle on either the real Brightspace home
+   or a known login surface (Microsoft login, SAML initiate, IdP, etc.)
+   before deciding.
+5. **Dedicated `brightspace-entra-auth` CLI**. Opens a visible Chromium
+   window, lets the user complete Entra ID login interactively, captures a
+   usable D2L API token (via Bearer interception, localStorage, XSRF, or
+   session-cookie fallback), and persists the session.
+6. **Accurate session-expiry UX in the MCP server**. The original server
+   tries to auto-spawn the auth CLI when the token expires. That cannot
+   work inside Claude Desktop — there is no terminal and no way to show a
+   browser window. The Entra fork disables auto-reauth for `entra` and
+   `manual` providers and instead returns a clear, actionable error message
+   telling the user to run `brightspace-entra-auth` in a terminal.
+7. **7-day default `tokenTtl`** for `entra`, matching the typical Entra
+   conditional-access re-authentication window (configurable per install).
 
-## Try It
+Nothing is removed. Purdue's automated flow still works if you set
+`"ssoProvider": "purdue"` in `~/.brightspace-mcp/config.json` and supply
+`username` / `password`.
 
-> "Download my lecture slides and turn them into interactive flashcards"
-> "Grab every assignment rubric and build me a visual dashboard of what I need to hit for an A"
+## Prerequisites
 
-## Install
+- Node.js 18+
+- The repository checked out into a local directory
+- `npm install` run once (this downloads Playwright's Chromium)
 
-**You need:** [Node.js 18+](https://nodejs.org/) (download the LTS version)
-
-**Option 1: Let your AI do it**
-
-Paste this into Claude Code, Cursor chat, Windsurf, Copilot, Codex, or any AI coding assistant:
-
-```
-I want to connect my Brightspace LMS to this AI client using the brightspace-mcp-server package on npm. Here's the repo: https://github.com/RohanMuppa/brightspace-mcp-server
-
-Do everything needed to get it working:
-
-1. First, check if Node.js 18+ is installed. If not, tell me how to install it and stop.
-
-2. Run the setup wizard to save my Brightspace credentials:
-   npx brightspace-mcp-server setup
-   (If I'm a Purdue student, use: npx brightspace-mcp-server setup --purdue)
-   This will open a browser for login and MFA. Let me complete that before continuing.
-
-3. After setup finishes, configure this AI client to use the MCP server.
-   The server command is: npx -y brightspace-mcp-server@latest
-   Search the internet for how to configure MCP servers in general for
-   whatever client I'm using. Every client has a different config format
-   and file path. On Windows, npx must be wrapped with cmd /c.
-
-4. Tell me to restart this AI client so it picks up the new MCP server.
-```
-
-**Option 2: Run it yourself**
-
-```bash
-npx brightspace-mcp-server setup
-```
-
-Purdue students can add `--purdue` to skip entering the school URL:
-
-```bash
-npx brightspace-mcp-server setup --purdue
-```
-
-The wizard walks you through login, MFA, and auto configures Claude Desktop and Cursor. Restart your AI client when it finishes.
-
-<details>
-<summary>Using a different client? Configure it manually.</summary>
-
-Search your client's docs for how to add an MCP server. The server command to register is:
-
-```
-npx -y brightspace-mcp-server@latest
+```sh
+cd /path/to/d2l-mcp
+npm install
+npm run build
 ```
 
-On **Windows**, npx must be wrapped: `cmd /c npx -y brightspace-mcp-server@latest`
+## Config file
 
-You still need to run `npx brightspace-mcp-server setup` first to save your credentials.
+The server reads `~/.brightspace-mcp/config.json`. For an Entra-backed
+Brightspace tenant, create it like this (no username or password — those
+are deliberately left out; Entra login is interactive):
 
-</details>
-
-## Session Expired?
-
-Sessions re-authenticate automatically. If auto-reauth fails (e.g., you missed the Duo push):
-
-```bash
-npx brightspace-mcp-server auth
+```json
+{
+  "baseUrl": "https://yourschool.desire2learn.com",
+  "ssoProvider": "entra",
+  "headless": false,
+  "tokenTtl": 604800
+}
 ```
 
-## What You Can Ask About
+Fields:
 
-| Topic | Examples |
-|-------|---------|
-| Grades | "Am I passing all my classes?" · "Compare my grades across all courses" |
-| Assignments | "What's due in the next 48 hours?" · "Summarize every assignment I haven't turned in yet" |
-| Announcements | "Did any professor post something important today?" · "What did my CS prof announce this week?" |
-| Course content | "Find the midterm review slides" · "Download every PDF from Module 5" |
-| Roster | "Who are the TAs for ECE 264?" · "Get me my instructor's email" |
-| Discussions | "What are people saying in the final project thread?" · "Summarize the latest discussion posts" |
-| Planning | "Build me a study schedule based on my upcoming due dates" · "Which class needs the most attention right now?" |
+| Field          | Meaning                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `baseUrl`      | The root URL of your institution's Brightspace tenant. Include `https://`.                                                                                   |
+| `ssoProvider`  | `"entra"` for Microsoft Entra ID (default), `"purdue"` for Purdue Shibboleth, `"manual"` for a generic manual flow.                                          |
+| `headless`     | Whether to run Chromium headless. Must be `false` for `entra`/`manual` — the user has to type their own credentials.                                         |
+| `tokenTtl`     | How long (seconds) the MCP server treats the captured token as valid. Default for `entra` is 7 days (`604800`). This does **not** extend Entra's real policy. |
+| `sessionDir`   | Optional. Where to store captured sessions. Defaults to `~/.d2l-session`.                                                                                    |
+| `includeCourses` / `excludeCourses` / `activeOnly` | Optional filtering, same semantics as upstream.                                                          |
+
+Environment variables (`D2L_BASE_URL`, `D2L_SSO_PROVIDER`, `D2L_HEADLESS`,
+`D2L_TOKEN_TTL`, `D2L_SESSION_DIR`, `D2L_INCLUDE_COURSES`,
+`D2L_EXCLUDE_COURSES`, `D2L_ACTIVE_ONLY`) override the config file if set.
+
+## Authenticating
+
+From a terminal (NOT from inside Claude Desktop), run:
+
+```sh
+npm run entra-auth
+```
+
+or, if the package is globally installed:
+
+```sh
+brightspace-entra-auth
+```
+
+A Chromium window will open. Sign in with your organization account
+(username → password → MFA / conditional access). Do not close the window;
+the CLI will close it automatically once Brightspace finishes loading and
+a usable session token has been captured. The encrypted session is saved
+to `~/.d2l-session/session.json`.
+
+**The first time** you run this, the Chromium persistent profile is seeded
+with your sign-in cookies. On subsequent runs, if Entra's cookies are still
+valid, you may not even need to re-enter credentials — Chromium will just
+sail through. When they are *not* valid, you will see the Microsoft login
+page again.
+
+## Session expiry and re-authentication
+
+Most Canadian post-secondary Entra tenants enforce a **7-day** re-auth
+window via conditional access. When that window elapses you will see one
+of these:
+
+- `check_auth` reports: *"Not authenticated with Brightspace ... Auto-reauthentication is disabled for ssoProvider=\"entra\" — the sign-in flow needs a visible browser window and cannot run inside Claude Desktop. Open a terminal and run `brightspace-entra-auth`..."*
+- Any other tool (`get_my_courses`, `get_my_grades`, etc.) fails with the
+  same message.
+
+The fix is always the same: open a terminal and run `brightspace-entra-auth`.
+The MCP server in Claude Desktop will pick up the new session automatically
+on the next tool call — no restart needed.
+
+This is an intentional design choice. The upstream `AuthRunner` spawns the
+auth CLI as a subprocess, which would try to open a Chromium window from
+inside the Claude Desktop process. That window would be invisible (no
+parent terminal, no user-facing UI), and the user would have no way to
+complete the Entra login. Failing loudly with a clear instruction is
+better than failing silently forever.
+
+## Claude Desktop configuration
+
+Add an entry to `~/Library/Application Support/Claude/claude_desktop_config.json`
+(macOS), using the absolute path to the local fork's `build/index.js`:
+
+```json
+{
+  "mcpServers": {
+    "brightspace": {
+      "command": "node",
+      "args": ["/absolute/path/to/d2l-mcp/build/index.js"]
+    }
+  }
+}
+```
+
+Then restart Claude Desktop. The server will read `~/.brightspace-mcp/config.json`
+on startup.
 
 ## Troubleshooting
 
-**"Not authenticated"** → Run `npx brightspace-mcp-server auth`
+- **Chromium didn't open.** Run `npx playwright install chromium` once.
+- **"Could not discover API versions"** on startup. The server calls
+  `/d2l/api/versions/` at boot. If Brightspace is up but returning HTML
+  (e.g. because the tenant is in maintenance), check the URL in a browser.
+- **The auth flow reached `/d2l/home` but no token was captured.** The
+  token is captured via several strategies in order: Bearer in
+  `localStorage["D2L.Fetch.Tokens"]`, passive network interception of
+  requests carrying `Authorization: Bearer`, D2L's XSRF token from page
+  context, and finally session-cookie auth (the `accessToken` is prefixed
+  with `cookie:` and sent as a `Cookie` header). If none of these succeed,
+  the session is unusable and `brightspace-entra-auth` exits with an error.
+- **You actually want the Purdue flow.** Set `"ssoProvider": "purdue"` in
+  `config.json` and supply `username` / `password`. Nothing Purdue-specific
+  was removed.
 
-**AI client not responding** → Quit and reopen it completely (not just close the window)
+## Credit
 
-**Need to redo setup** → Run `npx brightspace-mcp-server setup` again
-
-**Config location** → `~/.brightspace-mcp/config.json` (you can edit this directly)
-
-**Browser launch times out (Windows)** → Open Task Manager, end all Chromium/Chrome processes, and try again. If it persists, add the Playwright Chromium folder to your antivirus exclusion list.
-
-**Auth fails in WSL or Docker** → Chromium dependencies may be missing. Run `npx playwright install-deps chromium` to install them. The server automatically adds `--no-sandbox` for these environments.
-
-**Headless login fails (Windows)** → SSO login flows can fail in headless mode on Windows. The default is headed (a browser window opens). If you set `D2L_HEADLESS=true` and auth fails, switch back to headed mode.
-
-## Security
-
-- Credentials stay on your machine at `~/.brightspace-mcp/config.json` (restricted permissions)
-- Session tokens are encrypted (AES-256-GCM)
-- All traffic to Brightspace is HTTPS
-- Nothing is sent anywhere except your school's login page
-
-## Contributing & Forking
-
-Want to add your school, build a new tool, or fix something? Fork the repo, make your changes, and open a pull request. If it gets merged, it ships to every user automatically.
-
-```bash
-git clone https://github.com/RohanMuppa/brightspace-mcp-server.git
-cd brightspace-mcp-server
-npm install
-npm run dev
-```
-
-**Add your school:** Add a preset to `SCHOOL_PRESETS` in `src/setup.ts`. If your school's login flow is different, add a handler in `src/auth/`.
-
-**Add a new tool:** Create a file in `src/tools/`, add the schema in `schemas.ts`, export it in `src/tools/index.ts`, and register it in `src/index.ts`. Use any existing tool as a template.
-
-**Run your own version:** You can also fork and run it independently. Clone it, build it, and point your AI client to the local `build/index.js` instead of using `npx`. No npm needed. Just know that forks don't receive updates from this repo automatically. If your changes could help others, consider opening a PR.
-
-Licensed under the MIT License.
-
-## Updates
-
-Automatic. Every time your AI client starts a session, it runs `npx brightspace-mcp-server@latest` which pulls the newest version from npm. No action needed.
-
-If you ever suspect you're on an old version, run `npm cache clean --force` to clear the cache.
-
----
-
-Proudly made for Boilermakers by [Rohan Muppa](https://github.com/rohanmuppa) 🚂
-
-[Report a bug](https://github.com/rohanmuppa/brightspace-mcp-server/issues) · MIT · Copyright 2026 Rohan Muppa
+All Brightspace-specific logic (API client, tools, token management, cache,
+rate limiter, etc.) is from Rohan Muppa's upstream project. This fork only
+adjusts the auth layer to support institutions that use Microsoft Entra ID
+SSO and cannot auto-reauthenticate from inside Claude Desktop.

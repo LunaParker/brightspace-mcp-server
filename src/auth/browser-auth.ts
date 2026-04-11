@@ -13,17 +13,47 @@ import type { AppConfig, TokenData } from "../types/index.js";
 import { BrowserAuthError } from "../utils/errors.js";
 import { log } from "../utils/logger.js";
 import { PurdueSSOFlow } from "./purdue-sso.js";
+import { EntraSSOFlow, type SSOProviderFlow } from "./entra-sso.js";
 
 export class BrowserAuth {
   private config: AppConfig;
-  private ssoFlow: PurdueSSOFlow;
+  private ssoFlow: SSOProviderFlow;
 
   constructor(config: AppConfig) {
     this.config = config;
-    this.ssoFlow = new PurdueSSOFlow({
-      username: config.username,
-      password: config.password,
-    });
+    this.ssoFlow = BrowserAuth.createSsoFlow(config);
+  }
+
+  /**
+   * Pick the SSO provider implementation based on config.
+   * This fork defaults to "entra" (headed Microsoft Entra ID) for the
+   * many Brightspace tenants — particularly Canadian post-secondary
+   * institutions — that delegate authentication to Azure AD.
+   */
+  private static createSsoFlow(config: AppConfig): SSOProviderFlow {
+    switch (config.ssoProvider) {
+      case "purdue":
+        log("INFO", "Using Purdue Shibboleth SSO provider (upstream)");
+        return new PurdueSSOFlow({
+          username: config.username,
+          password: config.password,
+        });
+      case "entra":
+      case "manual":
+        log(
+          "INFO",
+          `Using ${config.ssoProvider === "entra" ? "Entra ID" : "generic manual"} SSO provider — browser will open for interactive login`
+        );
+        return new EntraSSOFlow();
+      default: {
+        const _exhaustive: never = config.ssoProvider;
+        void _exhaustive;
+        throw new BrowserAuthError(
+          `Unknown ssoProvider in config: ${String(config.ssoProvider)}`,
+          "config"
+        );
+      }
+    }
   }
 
   /**
@@ -124,118 +154,64 @@ export class BrowserAuth {
       // Navigate and login if needed
       const alreadyAuthenticated = await this.navigateAndLogin(page);
 
-      // If already authenticated via cookies, Bearer tokens won't appear in
-      // normal page requests. Try strategies to extract a usable token.
-      // Each strategy validates the token against /users/whoami before accepting.
+      // At this point the browser is sitting on a Brightspace page and the
+      // session is either (a) pre-existing cookies or (b) freshly minted
+      // from a just-completed login. We need to turn that into a durable
+      // token for the D2L API. There are several ways to get one, depending
+      // on how the specific Brightspace tenant is configured:
+      //
+      //   1. localStorage["D2L.Fetch.Tokens"] — Bearer token exposed by
+      //      D2L's own frontend. Fastest and most common on modern tenants.
+      //   2. Passive network interception — some tenants emit Bearer
+      //      tokens on background API calls shortly after /d2l/home loads.
+      //   3. XSRF token from D2L's JS context.
+      //   4. Session cookies (d2lSessionVal etc.) used as Cookie header.
+      //
+      // We try (1) first because it's fast and hits on ~every tenant, then
+      // race (2) against the remaining active strategies.
+      const extracted = await this.captureTokenFromLandedPage(
+        page,
+        context,
+        tokenPromise,
+        /* interceptGraceMs */ alreadyAuthenticated ? 15000 : 45000
+      );
+
+      if (extracted) {
+        await this.saveStorageState(context);
+        log("INFO", "Authentication complete");
+        return extracted;
+      }
+
+      // If we got here and were pretending to be "already authenticated",
+      // the cached cookies are stale or the tenant doesn't hand out usable
+      // tokens to this path. Clear cookies and run the login flow end-to-end.
       if (alreadyAuthenticated) {
-        log("INFO", "Session cookies active — trying to extract API token");
-
-        // Strategy 0: Try extracting Bearer token from localStorage (fastest)
-        const localStorageToken = await this.extractLocalStorageToken(page);
-        if (localStorageToken) {
-          const valid = await this.validateToken(localStorageToken);
-          if (valid) {
-            log("INFO", "Extracted valid Bearer token from localStorage");
-            const now = Date.now();
-            const tokenData: TokenData = {
-              accessToken: localStorageToken,
-              capturedAt: now,
-              expiresAt: now + this.config.tokenTtl * 1000,
-              source: "browser",
-            };
-            await this.saveStorageState(context);
-            return tokenData;
-          }
-          log("WARN", "localStorage Bearer token failed validation, trying next strategy");
-        }
-
-        // Strategy 1: Navigate to API endpoint to trigger Bearer-bearing requests
-        try {
-          log("DEBUG", "Navigating to API endpoint to trigger token capture");
-          await page.goto(
-            `${this.config.baseUrl}/d2l/api/lp/1.57/users/whoami`,
-            { waitUntil: "load", timeout: 15000 }
-          );
-        } catch {
-          log("DEBUG", "Direct API navigation did not produce Bearer token");
-        }
-
-        // Strategy 2: Try extracting XSRF token from D2L's JavaScript context
-        const xsrfToken = await this.extractXsrfToken(page);
-        if (xsrfToken) {
-          const valid = await this.validateToken(xsrfToken);
-          if (valid) {
-            log("INFO", "Extracted valid XSRF token from page context");
-            const now = Date.now();
-            const tokenData: TokenData = {
-              accessToken: xsrfToken,
-              capturedAt: now,
-              expiresAt: now + this.config.tokenTtl * 1000,
-              source: "browser",
-            };
-            await this.saveStorageState(context);
-            return tokenData;
-          }
-          log("WARN", "XSRF token failed validation, trying next strategy");
-        }
-
-        // Strategy 3: Extract session cookies for cookie-based API auth
-        const cookieToken = await this.extractCookieToken(context);
-        if (cookieToken) {
-          const valid = await this.validateToken(cookieToken);
-          if (valid) {
-            log("INFO", "Extracted valid session cookie for API auth");
-            const now = Date.now();
-            const tokenData: TokenData = {
-              accessToken: cookieToken,
-              capturedAt: now,
-              expiresAt: now + this.config.tokenTtl * 1000,
-              source: "browser",
-            };
-            await this.saveStorageState(context);
-            return tokenData;
-          }
-          log("WARN", "Cookie token failed validation, trying next strategy");
-        }
-
-        // Strategy 4: Clear cookies and force full re-login through SSO
-        log("WARN", "Could not extract valid token from existing session, forcing re-login");
+        log(
+          "WARN",
+          "Could not extract a usable token from existing session — forcing full re-login"
+        );
         await context.clearCookies();
-        // Close the old page and open a fresh one to kill any in-flight
-        // Brightspace redirects that would interrupt our next navigation
         await page.close();
         const freshPage = await context.newPage();
         const freshTokenPromise = this.setupTokenInterception(freshPage);
         await this.navigateAndLogin(freshPage);
-        const accessToken = await freshTokenPromise;
-        log("INFO", "Bearer token captured after forced re-login");
-        const now = Date.now();
-        const tokenData: TokenData = {
-          accessToken,
-          capturedAt: now,
-          expiresAt: now + this.config.tokenTtl * 1000,
-          source: "browser",
-        };
-        await this.saveStorageState(context);
-        return tokenData;
+        const fresh = await this.captureTokenFromLandedPage(
+          freshPage,
+          context,
+          freshTokenPromise,
+          60000
+        );
+        if (fresh) {
+          await this.saveStorageState(context);
+          log("INFO", "Authentication complete after forced re-login");
+          return fresh;
+        }
       }
 
-      // Normal flow: token captured during SSO redirect
-      log("INFO", "Waiting for Bearer token from network interception");
-      const accessToken = await tokenPromise;
-      log("INFO", "Bearer token captured successfully");
-
-      const now = Date.now();
-      const tokenData: TokenData = {
-        accessToken,
-        capturedAt: now,
-        expiresAt: now + this.config.tokenTtl * 1000,
-        source: "browser",
-      };
-
-      await this.saveStorageState(context);
-      log("INFO", "Authentication complete");
-      return tokenData;
+      throw new BrowserAuthError(
+        "Could not capture a usable session token after login. The tenant may not expose Bearer tokens in any recognized location.",
+        "token_capture"
+      );
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       log("ERROR", "Browser authentication failed", error);
@@ -272,6 +248,115 @@ export class BrowserAuth {
         }
       }
     }
+  }
+
+  /**
+   * After the browser has landed on Brightspace (either via cached cookies
+   * or a freshly-completed SSO login), try every known strategy to extract
+   * a usable API token. Each strategy is validated against /users/whoami
+   * before being accepted. Returns null if nothing works.
+   *
+   * This helper races the passive Bearer-interception promise against the
+   * active extraction strategies, so that a tenant that happens to emit
+   * Bearer requests during the initial load still produces the best token.
+   */
+  private async captureTokenFromLandedPage(
+    page: Page,
+    context: BrowserContext,
+    tokenPromise: Promise<string>,
+    interceptGraceMs: number
+  ): Promise<TokenData | null> {
+    const now = () => Date.now();
+    const mkTokenData = (accessToken: string): TokenData => {
+      const capturedAt = now();
+      return {
+        accessToken,
+        capturedAt,
+        expiresAt: capturedAt + this.config.tokenTtl * 1000,
+        source: "browser",
+      };
+    };
+
+    // Shield the passive interception promise from crashing the process
+    // if nothing ever matches within its own timeout. We'll race it
+    // manually with a shorter budget here.
+    const guardedInterception: Promise<string | null> = tokenPromise.catch(
+      (err) => {
+        log(
+          "DEBUG",
+          `Passive Bearer interception did not produce a token: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+        return null;
+      }
+    );
+
+    // Strategy 0: localStorage Bearer token. Fastest, works on most modern
+    // D2L tenants.
+    log("INFO", "Trying localStorage Bearer token extraction");
+    const lsToken = await this.extractLocalStorageToken(page);
+    if (lsToken && (await this.validateToken(lsToken))) {
+      log("INFO", "Captured valid Bearer token from localStorage");
+      return mkTokenData(lsToken);
+    }
+
+    // Give the passive interception a short window to resolve. Many D2L
+    // tenants emit a Bearer token in a background request within the first
+    // few seconds after /d2l/home finishes loading.
+    log("INFO", `Waiting up to ${Math.round(interceptGraceMs / 1000)}s for passive Bearer interception`);
+    const interceptionRaceWinner = await Promise.race([
+      guardedInterception,
+      new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), interceptGraceMs)
+      ),
+    ]);
+    if (typeof interceptionRaceWinner === "string" && interceptionRaceWinner !== "timeout") {
+      log("INFO", "Captured Bearer token via passive network interception");
+      return mkTokenData(interceptionRaceWinner);
+    }
+
+    // Strategy 1: Poke an API endpoint to try to trigger Bearer-bearing
+    // requests. D2L's frontend sometimes only fetches tokens lazily.
+    try {
+      log("DEBUG", "Navigating to API endpoint to trigger Bearer request");
+      await page.goto(
+        `${this.config.baseUrl}/d2l/api/lp/1.57/users/whoami`,
+        { waitUntil: "load", timeout: 15000 }
+      );
+    } catch {
+      log("DEBUG", "Direct API navigation failed (non-fatal)");
+    }
+
+    // Give the passive interception another short window after the poke.
+    const secondRace = await Promise.race([
+      guardedInterception,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 5000)),
+    ]);
+    if (typeof secondRace === "string" && secondRace !== "timeout") {
+      log("INFO", "Captured Bearer token after API-endpoint poke");
+      return mkTokenData(secondRace);
+    }
+
+    // Strategy 2: XSRF token from D2L's JS context.
+    log("INFO", "Trying XSRF token extraction from page context");
+    const xsrfToken = await this.extractXsrfToken(page);
+    if (xsrfToken && (await this.validateToken(xsrfToken))) {
+      log("INFO", "Captured valid XSRF token from page context");
+      return mkTokenData(xsrfToken);
+    }
+
+    // Strategy 3: Session cookies used directly as a Cookie header.
+    log("INFO", "Trying session-cookie fallback");
+    const cookieToken = await this.extractCookieToken(context);
+    if (cookieToken && (await this.validateToken(cookieToken))) {
+      log("INFO", "Captured valid session-cookie token");
+      return mkTokenData(cookieToken);
+    }
+
+    // Nothing worked.
+    log("WARN", "No token capture strategy succeeded on this page");
+    return null;
   }
 
   /**
@@ -351,29 +436,84 @@ export class BrowserAuth {
   /**
    * Navigate to Brightspace and login if needed.
    * Returns true if already authenticated (cookies valid), false if SSO login was performed.
+   *
+   * Many Brightspace installations serve a tiny HTML stub at /d2l/home
+   * that immediately calls `window.location.replace('/d2l/login...')`
+   * via JavaScript. If we check page.url() too early, the URL still looks like
+   * /d2l/home and we would incorrectly conclude that the user is authenticated.
+   * To avoid that, we wait for the navigation chain to settle before deciding.
    */
   private async navigateAndLogin(page: Page): Promise<boolean> {
     try {
       log("INFO", `Navigating to ${this.config.baseUrl}/d2l/home`);
       await page.goto(`${this.config.baseUrl}/d2l/home`, {
-        waitUntil: "domcontentloaded",
+        waitUntil: "load",
         timeout: 30000,
       });
 
-      const currentUrl = page.url();
-      log("DEBUG", `Current URL after navigation: ${currentUrl}`);
+      // Wait for any client-side `window.location.replace(...)` to trigger and
+      // land somewhere recognizable. We don't care which recognized URL wins —
+      // we just need the navigation chain to settle.
+      try {
+        await page.waitForURL(
+          (url) => {
+            const href = url.toString();
+            // Brightspace home — but exclude the thin redirect stub by requiring
+            // either a path segment under /d2l/home or a query string, because
+            // the stub itself lives at exactly /d2l/home with no content.
+            const isBrightspaceHome =
+              /\/d2l\/home\/\d/.test(href) || // /d2l/home/123456 (course home)
+              /\/d2l\/home\b.*[?#]/.test(href); // /d2l/home?... or /d2l/home#...
+            // Any known login surface — we'll hand off to the SSO provider.
+            const isLoginSurface =
+              href.includes("login.microsoftonline.com") ||
+              href.includes("login.live.com") ||
+              href.includes("/d2l/login") ||
+              href.includes("/d2l/lp/auth/") ||
+              href.includes("/sso/") ||
+              href.includes("idp.") ||
+              href.includes("sso.");
+            return isBrightspaceHome || isLoginSurface;
+          },
+          { timeout: 10000 }
+        );
+      } catch {
+        // No matching URL within 10s — fall through to heuristics below.
+        log(
+          "DEBUG",
+          "waitForURL settle timed out after page.goto — continuing with current URL"
+        );
+      }
 
-      // If we were redirected away from /d2l/home, login is required
-      const needsLogin = !currentUrl.includes("/d2l/home");
+      // Best-effort network-idle wait so that any last-mile redirects complete
+      // before we inspect the URL. Microsoft login pages sometimes never reach
+      // full network idle due to background telemetry, so we cap the wait.
+      await page
+        .waitForLoadState("networkidle", { timeout: 10000 })
+        .catch(() => undefined);
+
+      const currentUrl = page.url();
+      log("DEBUG", `Current URL after navigation settled: ${currentUrl}`);
+
+      // Heuristic for "logged in" vs "needs login":
+      //   - Logged in: URL is Brightspace home at a path deeper than the stub,
+      //     i.e. /d2l/home/<something> or /d2l/home with a query.
+      //   - Needs login: anything else (login.microsoftonline.com, /d2l/login,
+      //     the SAML initiate endpoint, a bare /d2l/home stub that still
+      //     hasn't finished redirecting, etc.).
+      const onBrightspaceHome =
+        /\/d2l\/home\/\d/.test(currentUrl) ||
+        /\/d2l\/home\b.*[?#]/.test(currentUrl);
+      const needsLogin = !onBrightspaceHome;
 
       if (needsLogin) {
         let loginSuccess: boolean;
 
         if (this.ssoFlow.hasCredentials()) {
-          log("INFO", `Login required (redirected to ${currentUrl}) - starting SSO flow`);
+          log("INFO", `Login required (at ${currentUrl}) — starting automated SSO flow`);
           loginSuccess = await this.ssoFlow.login(page);
         } else {
-          log("INFO", `Login required (redirected to ${currentUrl}) - opening browser for manual login`);
+          log("INFO", `Login required (at ${currentUrl}) — opening browser for manual login`);
           loginSuccess = await this.ssoFlow.manualLogin(page);
         }
 
@@ -381,12 +521,16 @@ export class BrowserAuth {
           throw new BrowserAuthError("SSO login flow failed", "sso_login");
         }
 
-        await page.waitForLoadState("networkidle", { timeout: 30000 });
+        await page
+          .waitForLoadState("networkidle", { timeout: 30000 })
+          .catch(() => undefined);
         return false;
       }
 
-      log("INFO", "Already authenticated - skipping SSO login");
-      await page.waitForLoadState("networkidle", { timeout: 30000 });
+      log("INFO", "Already authenticated — skipping SSO login");
+      await page
+        .waitForLoadState("networkidle", { timeout: 30000 })
+        .catch(() => undefined);
       return true;
     } catch (error) {
       if (error instanceof BrowserAuthError) throw error;

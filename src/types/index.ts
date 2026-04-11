@@ -27,12 +27,21 @@ export interface SessionFile {
   expiresAt: number; // Unix timestamp ms
 }
 
+/**
+ * SSO provider the auth flow should target.
+ * - "entra": headed Microsoft Entra ID login (manual). Default in this fork.
+ * - "purdue": upstream Purdue Shibboleth automation (requires username/password).
+ * - "manual": generic manual flow with no IdP-specific behavior.
+ */
+export type SsoProvider = "entra" | "purdue" | "manual";
+
 // Application configuration
 export interface AppConfig {
   baseUrl: string;
   sessionDir: string;
   tokenTtl: number; // seconds
   headless: boolean;
+  ssoProvider: SsoProvider;
   username?: string;
   password?: string;
   courseFilter: CourseFilterConfig;

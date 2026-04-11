@@ -33,6 +33,7 @@ export class D2LApiClient {
   private readonly cacheTTLs: CacheTTLs;
   private readonly timeoutMs: number;
   private readonly onAuthExpired?: () => Promise<boolean>;
+  private readonly authExpiredMessage: string;
   private versions: ApiVersions | null = null;
 
   constructor(options: D2LApiClientOptions) {
@@ -48,6 +49,9 @@ export class D2LApiClient {
     this.tokenManager = options.tokenManager;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.onAuthExpired = options.onAuthExpired;
+    this.authExpiredMessage =
+      options.authExpiredMessage ??
+      "Session expired. Please re-authenticate via brightspace-auth.";
 
     // Merge user-provided TTLs with defaults
     this.cacheTTLs = { ...DEFAULT_CACHE_TTLS, ...options.cacheTTLs };
@@ -179,7 +183,7 @@ export class D2LApiClient {
       }
       log("WARN", "Auto-reauthentication did not produce a valid token");
     }
-    throw new ApiError(401, path, "Session expired. Please re-authenticate via brightspace-auth.");
+    throw new ApiError(401, path, this.authExpiredMessage);
   }
 
   /**
@@ -209,11 +213,7 @@ export class D2LApiClient {
           // Second 401 - clear token and throw
           log("DEBUG", "Second 401 response, clearing token");
           await this.tokenManager.clearToken();
-          throw new ApiError(
-            401,
-            path,
-            "Session expired. Please re-authenticate via brightspace-auth.",
-          );
+          throw new ApiError(401, path, this.authExpiredMessage);
         }
 
         // First 401 - try to get fresher token
@@ -223,11 +223,7 @@ export class D2LApiClient {
         if (!freshToken || freshToken.accessToken === token.accessToken) {
           // No fresher token available
           await this.tokenManager.clearToken();
-          throw new ApiError(
-            401,
-            path,
-            "Session expired. Please re-authenticate via brightspace-auth.",
-          );
+          throw new ApiError(401, path, this.authExpiredMessage);
         }
 
         // Retry with fresh token
@@ -307,11 +303,7 @@ export class D2LApiClient {
           // Second 401 - clear token and throw
           log("DEBUG", "Second 401 response, clearing token");
           await this.tokenManager.clearToken();
-          throw new ApiError(
-            401,
-            path,
-            "Session expired. Please re-authenticate via brightspace-auth.",
-          );
+          throw new ApiError(401, path, this.authExpiredMessage);
         }
 
         // First 401 - try to get fresher token
@@ -321,11 +313,7 @@ export class D2LApiClient {
         if (!freshToken || freshToken.accessToken === token.accessToken) {
           // No fresher token available
           await this.tokenManager.clearToken();
-          throw new ApiError(
-            401,
-            path,
-            "Session expired. Please re-authenticate via brightspace-auth.",
-          );
+          throw new ApiError(401, path, this.authExpiredMessage);
         }
 
         // Retry with fresh token

@@ -50,6 +50,13 @@ export interface D2LApiClientOptions {
   timeoutMs?: number; // default 30_000
   /** Called when auth is expired and retries are exhausted. Return true if re-auth succeeded. */
   onAuthExpired?: () => Promise<boolean>;
+  /**
+   * Message attached to 401 ApiErrors when the session has expired.
+   * Defaults to a generic "please re-authenticate" message. Forks can
+   * override this to tell the user exactly which CLI command to run
+   * (e.g. "brightspace-entra-auth" for the Entra ID fork).
+   */
+  authExpiredMessage?: string;
 }
 
 // Re-export TokenData from shared types for convenience
