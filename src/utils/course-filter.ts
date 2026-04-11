@@ -10,28 +10,65 @@ import { log } from "./logger.js";
 interface FilterableCourse {
   id: number;
   isActive: boolean;
+  /**
+   * Enrollment availability dates from D2L's /enrollments/myenrollments/
+   * response (Access.StartDate / Access.EndDate). Used by the currentOnly
+   * filter. Either may be null — null means "open-ended" on that side.
+   */
+  startDate?: string | null;
+  endDate?: string | null;
+}
+
+/**
+ * True if `now` falls within [startDate, endDate], treating nulls as
+ * open-ended on either side. Matches Brightspace's "Current Courses"
+ * widget: an ongoing resource org with no dates stays visible, a past
+ * semester course drops out, and an upcoming term hasn't started yet.
+ */
+function isCurrentlyInWindow(
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+  now: number
+): boolean {
+  if (startDate) {
+    const start = Date.parse(startDate);
+    if (!Number.isNaN(start) && start > now) return false;
+  }
+  if (endDate) {
+    const end = Date.parse(endDate);
+    if (!Number.isNaN(end) && end < now) return false;
+  }
+  return true;
 }
 
 /**
  * Apply course filtering based on environment variable configuration.
  *
  * Filter priority:
- * 1. activeOnly — exclude inactive courses (default: true)
- * 2. includeCourseIds — whitelist (only these courses)
- * 3. excludeCourseIds — blacklist (remove these courses)
+ * 1. activeOnly — exclude inactive enrollments (default: true)
+ * 2. currentOnly — exclude courses outside their availability window (default: false)
+ * 3. includeCourseIds — whitelist (only these courses)
+ * 4. excludeCourseIds — blacklist (remove these courses)
  *
  * Tool-level courseId params bypass this filter entirely —
  * if user explicitly requests courseId=X, honor it regardless of config.
  */
 export function applyCourseFilter<T extends FilterableCourse>(
   courses: T[],
-  config: CourseFilterConfig
+  config: CourseFilterConfig,
+  now: number = Date.now()
 ): T[] {
   let filtered = courses;
   const originalCount = courses.length;
 
   if (config.activeOnly) {
     filtered = filtered.filter(c => c.isActive);
+  }
+
+  if (config.currentOnly) {
+    filtered = filtered.filter(c =>
+      isCurrentlyInWindow(c.startDate, c.endDate, now)
+    );
   }
 
   if (config.includeCourseIds && config.includeCourseIds.length > 0) {
@@ -45,6 +82,7 @@ export function applyCourseFilter<T extends FilterableCourse>(
   if (filtered.length !== originalCount) {
     log("DEBUG", `Course filter: ${originalCount} -> ${filtered.length} courses`, {
       activeOnly: config.activeOnly,
+      currentOnly: config.currentOnly,
       include: config.includeCourseIds,
       exclude: config.excludeCourseIds,
     });

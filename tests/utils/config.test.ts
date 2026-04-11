@@ -25,6 +25,7 @@ interface ConfigStoreData {
   includeCourses?: number[];
   excludeCourses?: number[];
   activeOnly?: boolean;
+  currentOnly?: boolean;
 }
 
 describe("loadConfig — ssoProvider resolution", () => {
@@ -179,5 +180,32 @@ describe("loadConfig — ssoProvider resolution", () => {
     await writeConfig({ ssoProvider: "entra" });
     const config = await freshLoadConfig();
     expect(config.headless).toBe(false);
+  });
+
+  describe("courseFilter.currentOnly", () => {
+    it("defaults to false", async () => {
+      const config = await freshLoadConfig();
+      expect(config.courseFilter.currentOnly).toBe(false);
+    });
+
+    it("reads currentOnly=true from the config file", async () => {
+      await writeConfig({ currentOnly: true });
+      const config = await freshLoadConfig();
+      expect(config.courseFilter.currentOnly).toBe(true);
+    });
+
+    it("lets D2L_CURRENT_ONLY env var override the config file", async () => {
+      await writeConfig({ currentOnly: false });
+      process.env.D2L_CURRENT_ONLY = "true";
+      const config = await freshLoadConfig();
+      expect(config.courseFilter.currentOnly).toBe(true);
+    });
+
+    it("D2L_CURRENT_ONLY=false disables even if config file says true", async () => {
+      await writeConfig({ currentOnly: true });
+      process.env.D2L_CURRENT_ONLY = "false";
+      const config = await freshLoadConfig();
+      expect(config.courseFilter.currentOnly).toBe(false);
+    });
   });
 });

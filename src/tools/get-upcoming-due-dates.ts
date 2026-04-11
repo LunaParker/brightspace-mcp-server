@@ -32,6 +32,8 @@ interface EnrollmentItem {
   };
   Access: {
     IsActive: boolean;
+    StartDate: string | null;
+    EndDate: string | null;
   };
 }
 
@@ -79,13 +81,15 @@ export function registerGetUpcomingDueDates(
             { ttl: DEFAULT_CACHE_TTLS.enrollments }
           );
 
-          // Apply course filter
+          // Apply course filter. startDate/endDate feed the currentOnly check.
           const filteredEnrollments = applyCourseFilter(
             enrollments.Items.map(item => ({
               id: item.OrgUnit.Id,
               name: item.OrgUnit.Name,
               code: item.OrgUnit.Code,
               isActive: item.Access.IsActive,
+              startDate: item.Access.StartDate,
+              endDate: item.Access.EndDate,
             })),
             config.courseFilter
           );

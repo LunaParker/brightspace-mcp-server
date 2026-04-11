@@ -23,6 +23,8 @@ interface EnrollmentItem {
   Access: {
     ClasslistRoleName: string;
     IsActive: boolean;
+    StartDate: string | null;
+    EndDate: string | null;
     LastAccessed: string | null;
   };
 }
@@ -77,7 +79,8 @@ export function registerGetMyCourses(
           );
         }
 
-        // Map to clean objects and apply course filter
+        // Map to clean objects and apply course filter. startDate/endDate
+        // are included so the currentOnly filter can drop past/future terms.
         const courses = applyCourseFilter(
           response.Items.map((item) => ({
             id: item.OrgUnit.Id,
@@ -85,6 +88,8 @@ export function registerGetMyCourses(
             code: item.OrgUnit.Code,
             role: item.Access.ClasslistRoleName,
             isActive: item.Access.IsActive,
+            startDate: item.Access.StartDate,
+            endDate: item.Access.EndDate,
             lastAccessed: item.Access.LastAccessed,
           })),
           config.courseFilter

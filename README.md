@@ -88,7 +88,8 @@ are deliberately left out; Entra login is interactive):
   "baseUrl": "https://yourschool.desire2learn.com",
   "ssoProvider": "entra",
   "headless": false,
-  "tokenTtl": 604800
+  "tokenTtl": 604800,
+  "currentOnly": true
 }
 ```
 
@@ -101,11 +102,14 @@ Fields:
 | `headless`     | Whether to run Chromium headless. Must be `false` for `entra`/`manual` — the user has to type their own credentials.                                         |
 | `tokenTtl`     | How long (seconds) the MCP server treats the captured token as valid. Default for `entra` is 7 days (`604800`). This does **not** extend Entra's real policy. |
 | `sessionDir`   | Optional. Where to store captured sessions. Defaults to `~/.d2l-session`.                                                                                    |
-| `includeCourses` / `excludeCourses` / `activeOnly` | Optional filtering, same semantics as upstream.                                                          |
+| `activeOnly`   | Only return courses whose enrollment's `IsActive` flag is true. Default `true`. D2L keeps stale enrollments as active for years, so this alone does **not** hide past semesters. |
+| `currentOnly`  | Only return courses whose `Access.StartDate ≤ now ≤ Access.EndDate`, matching Brightspace's "Current Courses" widget. Courses with null start/end dates (ongoing resource orgs) stay visible. Default `false`. Turn this on to drop past and future terms from every tool response. |
+| `includeCourses` / `excludeCourses` | Optional ID whitelist / blacklist applied after `activeOnly` and `currentOnly`.                                                           |
 
 Environment variables (`D2L_BASE_URL`, `D2L_SSO_PROVIDER`, `D2L_HEADLESS`,
 `D2L_TOKEN_TTL`, `D2L_SESSION_DIR`, `D2L_INCLUDE_COURSES`,
-`D2L_EXCLUDE_COURSES`, `D2L_ACTIVE_ONLY`) override the config file if set.
+`D2L_EXCLUDE_COURSES`, `D2L_ACTIVE_ONLY`, `D2L_CURRENT_ONLY`) override the
+config file if set.
 
 ## Authenticating
 

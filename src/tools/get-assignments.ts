@@ -112,6 +112,8 @@ interface EnrollmentItem {
   Access: {
     ClasslistRoleName: string;
     IsActive: boolean;
+    StartDate: string | null;
+    EndDate: string | null;
     LastAccessed: string | null;
   };
 }
@@ -368,13 +370,15 @@ export function registerGetAssignments(
           { ttl: DEFAULT_CACHE_TTLS.enrollments }
         );
 
-        // Apply course filter
+        // Apply course filter. startDate/endDate feed the currentOnly check.
         const filteredEnrollments = applyCourseFilter(
           enrollmentResponse.Items.map(item => ({
             id: item.OrgUnit.Id,
             name: item.OrgUnit.Name,
             code: item.OrgUnit.Code,
             isActive: item.Access.IsActive,
+            startDate: item.Access.StartDate,
+            endDate: item.Access.EndDate,
             ...item,
           })),
           config.courseFilter

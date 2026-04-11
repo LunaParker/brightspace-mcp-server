@@ -65,5 +65,17 @@ export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 export interface CourseFilterConfig {
   includeCourseIds?: number[];
   excludeCourseIds?: number[];
+  /**
+   * Only include courses where the enrollment's IsActive flag is true.
+   * This is D2L's notion of "accessible" — it doesn't drop past terms,
+   * just orgs the user has been removed from.
+   */
   activeOnly: boolean;
+  /**
+   * Only include courses whose Access.StartDate ≤ now ≤ Access.EndDate,
+   * matching Brightspace's "Current Courses" widget. Courses with null
+   * start/end dates (ongoing resource orgs like community spaces) are
+   * treated as open-ended and always pass this filter. Default: false.
+   */
+  currentOnly: boolean;
 }

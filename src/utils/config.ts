@@ -84,6 +84,15 @@ export function loadConfig(): AppConfig {
     activeOnly = process.env.D2L_ACTIVE_ONLY !== 'false';
   }
 
+  // Resolve currentOnly: env > store > default (false). When true, a
+  // course only passes the filter if `Access.StartDate ≤ now ≤ Access.EndDate`.
+  // Null dates are treated as open-ended, so ongoing resource orgs still
+  // appear. This mirrors Brightspace's "Current Courses" widget.
+  let currentOnly = store?.currentOnly ?? false;
+  if (process.env.D2L_CURRENT_ONLY !== undefined) {
+    currentOnly = process.env.D2L_CURRENT_ONLY !== 'false';
+  }
+
   return {
     baseUrl: process.env.D2L_BASE_URL || store?.baseUrl || "https://purdue.brightspace.com",
     sessionDir,
@@ -96,6 +105,7 @@ export function loadConfig(): AppConfig {
       includeCourseIds,
       excludeCourseIds,
       activeOnly,
+      currentOnly,
     },
   };
 }
