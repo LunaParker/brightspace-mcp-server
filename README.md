@@ -60,6 +60,27 @@ every other institution.
    archives in addition to the upstream ZIP entry, so `.7z` starter-code
    archives and the like can be downloaded without tripping the safety
    check.
+10. **Inline-mode downloads.** `downloadPath` is now optional on
+    `download_file`. When omitted, the file is returned directly in the
+    MCP tool response as inline content blocks — extracted text + an
+    embedded resource blob for PDFs (via `unpdf`), an `ImageContent`
+    block for images, a text resource for text/JSON, and a base64 blob
+    resource for other binaries. This fixes the Claude Desktop scenario
+    where the MCP server runs on the host filesystem but Claude's own
+    analysis/bash tool runs in a separate sandbox that cannot see files
+    the MCP server writes to disk. Disk mode still works when
+    `downloadPath` is a real absolute path on the host — and passing a
+    Claude Desktop sandbox path like `/mnt/user-data/tool_results` now
+    returns a clear error telling the caller to omit `downloadPath` and
+    use inline mode instead.
+11. **`currentOnly` course filter.** A new config field (and
+    `D2L_CURRENT_ONLY` env var) that drops any enrollment whose
+    `Access.StartDate`/`EndDate` window doesn't contain `now`, matching
+    Brightspace's "Current Courses" widget. Courses with null start/end
+    dates (ongoing resource orgs like community spaces) are treated as
+    open-ended and stay visible. Default `false`. Applied uniformly by
+    `get_my_courses`, `get_assignments`, `get_my_grades`,
+    `get_announcements`, and `get_upcoming_due_dates`.
 
 Nothing is removed. Purdue's automated flow still works if you set
 `"ssoProvider": "purdue"` in `~/.brightspace-mcp/config.json` and supply

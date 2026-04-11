@@ -62,8 +62,8 @@ export const DownloadFileSchema = z.object({
     .describe("Specific file ID within the student's own dropbox submission. Use this to download a file the user previously submitted."),
   attachmentId: z.coerce.number().int().positive().optional()
     .describe("File ID of an instructor-uploaded attachment on a dropbox folder (e.g. a project spec PDF or starter-code archive listed in get_assignments' `attachments` array). Mutually exclusive with fileId."),
-  downloadPath: z.string().min(1)
-    .describe("Absolute path to the directory where the file should be saved."),
+  downloadPath: z.string().min(1).optional()
+    .describe("Absolute path to the directory where the file should be saved on the HOST filesystem (the same filesystem the MCP server runs on). Omit this to receive the file inline in the tool response instead — this is the right choice inside Claude Desktop, because the MCP server's host filesystem is NOT the same as Claude's analysis/bash sandbox, so a file written to disk here will not be visible to Claude's other tools."),
   customFilename: z.string().optional()
     .describe("Custom filename for the downloaded file (include extension). If not provided, uses the original filename from Brightspace."),
 });
