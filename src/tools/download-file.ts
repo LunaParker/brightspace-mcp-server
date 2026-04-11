@@ -36,6 +36,38 @@ const INLINE_MAX_SIZE = 10 * 1024 * 1024; // 10 MB
 const INLINE_PDF_TEXT_MAX_CHARS = 400_000;
 
 /**
+ * Maximum number of characters of inline text file content we'll return
+ * as a TextContent block. Keeps a single runaway log from poisoning the
+ * conversation context.
+ */
+const INLINE_TEXT_FILE_MAX_CHARS = 400_000;
+
+/**
+ * MCP image content blocks are passed through to Anthropic's vision
+ * pipeline, which accepts JPEG, PNG, GIF, and WebP. Any other image
+ * mime (SVG, BMP, TIFF, etc.) will be rejected by the API, so we fall
+ * back to the generic binary-description path for those.
+ */
+const IMAGE_CONTENT_SUPPORTED_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+/**
+ * True for mime types whose bytes are safe to decode as UTF-8 and return
+ * as a TextContent block.
+ */
+function isTextualMime(mime: string): boolean {
+  return (
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime === "application/xml"
+  );
+}
+
+/**
  * Parse a Content-Disposition header and return the filename. Handles both
  * the plain form (`filename="foo.pdf"`) and the RFC 5987 extended form
  * (`filename*=UTF-8''Project.pdf`) used by D2L.
@@ -146,6 +178,17 @@ async function respondWithFile(options: {
   }
 
   // ── Inline mode ────────────────────────────────────────────────────────
+  //
+  // Design note: inline mode deliberately avoids the MCP `EmbeddedResource`
+  // content type, because Claude Desktop's MCP client feeds embedded
+  // resources with `mimeType: application/pdf` into Anthropic's document
+  // processing pipeline, which rejects PDFs that contain JBIG2-compressed
+  // embedded images (a common encoding for scanned pages and screenshots
+  // in academic PDFs). The rejection is surfaced as a generic "media type"
+  // error that can blow up the entire tool response, even when the
+  // response also contains perfectly valid TextContent blocks with
+  // extracted text. To stay reliable across clients, inline mode only
+  // emits TextContent (and ImageContent for jpeg/png/gif/webp).
   if (buffer.length > INLINE_MAX_SIZE) {
     return errorResponse(
       `File too large for inline delivery (${Math.round(buffer.length / 1024 / 1024)}MB, inline max ${INLINE_MAX_SIZE / 1024 / 1024}MB). Provide an absolute downloadPath on the host filesystem to save it to disk instead.`
@@ -163,90 +206,95 @@ async function respondWithFile(options: {
     );
   }
 
-  const uri = `brightspace://inline/${encodeURIComponent(effectiveFilename)}`;
   const content: CallToolResult["content"] = [];
 
-  // Metadata header
-  content.push({
-    type: "text",
-    text: JSON.stringify(
-      {
-        mode: "inline",
-        filename: effectiveFilename,
-        originalFilename,
-        mimeType: mime,
-        size: buffer.length,
-        source: "brightspace",
-        note:
-          "File content follows as inline MCP content blocks. No disk write was performed. Use downloadPath to save to disk instead when running outside Claude Desktop.",
-      },
-      null,
-      2
-    ),
-  });
+  // Metadata header — always first so callers can introspect the file.
+  const metadata: Record<string, unknown> = {
+    mode: "inline",
+    filename: effectiveFilename,
+    originalFilename,
+    mimeType: mime,
+    size: buffer.length,
+    source: "brightspace",
+  };
 
   if (mime === "application/pdf") {
-    // Extract text so the model can actually read the contents. The raw
-    // PDF is also embedded as a resource blob for clients that can render
-    // it (and as a fallback if extraction fails or is truncated).
+    // PDF: extract text via unpdf. The extracted text is ALL we send back.
+    // The raw bytes are deliberately not embedded — see design note above.
     const extracted = await extractPdfText(buffer);
-    if (extracted && extracted.text) {
-      const truncated = extracted.text.length > INLINE_PDF_TEXT_MAX_CHARS;
-      const text = truncated
-        ? extracted.text.slice(0, INLINE_PDF_TEXT_MAX_CHARS) +
-          `\n\n[...extracted text truncated at ${INLINE_PDF_TEXT_MAX_CHARS} characters; ${extracted.text.length - INLINE_PDF_TEXT_MAX_CHARS} more characters exist in the source PDF...]`
-        : extracted.text;
-      content.push({
-        type: "text",
-        text: `--- Extracted PDF text (${extracted.totalPages} page${extracted.totalPages === 1 ? "" : "s"})${truncated ? ", truncated" : ""} ---\n${text}`,
-      });
-    } else {
-      content.push({
-        type: "text",
-        text: "--- PDF text extraction failed or produced no text; the raw PDF is attached as an embedded resource below. ---",
-      });
+    if (!extracted || !extracted.text) {
+      metadata.representation = "pdf_text_extraction_failed";
+      metadata.note =
+        "PDF text extraction failed. Re-run with an absolute downloadPath on the host filesystem to save the raw PDF to disk.";
+      content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
+      log(
+        "WARN",
+        `${sourceLabel} PDF text extraction failed for ${effectiveFilename} (${buffer.length} bytes)`
+      );
+      return { content };
     }
+
+    const truncated = extracted.text.length > INLINE_PDF_TEXT_MAX_CHARS;
+    const body = truncated
+      ? extracted.text.slice(0, INLINE_PDF_TEXT_MAX_CHARS) +
+        `\n\n[...extracted text truncated at ${INLINE_PDF_TEXT_MAX_CHARS} characters; ${extracted.text.length - INLINE_PDF_TEXT_MAX_CHARS} more characters exist in the source PDF. Re-run with a downloadPath to save the full PDF to disk...]`
+      : extracted.text;
+
+    metadata.representation = "extracted_text";
+    metadata.pages = extracted.totalPages;
+    metadata.extractedChars = extracted.text.length;
+    metadata.truncated = truncated;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
     content.push({
-      type: "resource",
-      resource: {
-        uri,
-        mimeType: mime,
-        blob: buffer.toString("base64"),
-      },
+      type: "text",
+      text: `--- Extracted PDF text (${extracted.totalPages} page${extracted.totalPages === 1 ? "" : "s"})${truncated ? ", truncated" : ""} ---\n${body}`,
     });
-  } else if (mime.startsWith("image/")) {
+  } else if (IMAGE_CONTENT_SUPPORTED_MIMES.has(mime)) {
+    // Images: ImageContent is the one non-text block type Claude Desktop
+    // reliably handles. Only JPEG / PNG / GIF / WebP — other image mimes
+    // fall through to the generic binary handler below.
+    metadata.representation = "image";
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
     content.push({
       type: "image",
       data: buffer.toString("base64"),
       mimeType: mime,
     });
-  } else if (
-    mime.startsWith("text/") ||
-    mime === "application/json" ||
-    mime === "application/xml"
-  ) {
+  } else if (isTextualMime(mime)) {
+    // Text / JSON / XML: inline the file contents as a TextContent block.
+    const raw = buffer.toString("utf8");
+    const truncated = raw.length > INLINE_TEXT_FILE_MAX_CHARS;
+    const body = truncated
+      ? raw.slice(0, INLINE_TEXT_FILE_MAX_CHARS) +
+        `\n\n[...file truncated at ${INLINE_TEXT_FILE_MAX_CHARS} characters; ${raw.length - INLINE_TEXT_FILE_MAX_CHARS} more characters exist in the source file. Re-run with a downloadPath to save the full file to disk...]`
+      : raw;
+
+    metadata.representation = "text";
+    metadata.truncated = truncated;
+    metadata.chars = raw.length;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
     content.push({
-      type: "resource",
-      resource: {
-        uri,
-        mimeType: mime,
-        text: buffer.toString("utf8"),
-      },
+      type: "text",
+      text: `--- File contents (${effectiveFilename}) ---\n${body}`,
     });
   } else {
+    // Everything else (7z, zip, docx, pptx, mp4, etc.): we can't meaningfully
+    // display the bytes in the conversation, and emitting an
+    // EmbeddedResource would put us back in the PDF-rejection failure mode.
+    // Return a description and tell the caller to use disk mode.
+    metadata.representation = "binary_description_only";
+    metadata.note =
+      `This file type (${mime}) cannot be read inline. To use this file, re-run download_file with an absolute \`downloadPath\` on the host filesystem — for example \`~/Downloads\` or \`/tmp\` — to save the bytes to disk. Claude Desktop's analysis/bash sandbox paths like /mnt/user-data/* will NOT work.`;
+    content.push({ type: "text", text: JSON.stringify(metadata, null, 2) });
     content.push({
-      type: "resource",
-      resource: {
-        uri,
-        mimeType: mime,
-        blob: buffer.toString("base64"),
-      },
+      type: "text",
+      text: `--- Binary file ---\n${effectiveFilename} (${mime}, ${buffer.length} bytes) has been fetched from Brightspace but cannot be displayed inline. To use it, re-run the tool with downloadPath set to an absolute host-filesystem directory where the file should be saved.`,
     });
   }
 
   log(
     "INFO",
-    `${sourceLabel} returned inline: ${effectiveFilename} (${buffer.length} bytes, ${mime})`
+    `${sourceLabel} returned inline: ${effectiveFilename} (${buffer.length} bytes, ${mime}, representation=${metadata.representation})`
   );
 
   return { content };
