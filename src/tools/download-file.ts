@@ -31,7 +31,7 @@ export function registerDownloadFile(
     {
       title: "Download File",
       description:
-        "Download a file from course content or assignment submissions to a local directory. Use this when the user wants to download, save, or get a file from Brightspace course content or dropbox submissions. IMPORTANT: You MUST ask the user where they want to save the file before calling this tool. Never guess or assume a download directory. After identifying the file to download, suggest a clean readable filename to the user (e.g., 'Lecture 7 - Memory Management.pdf' instead of 'L07_CS251_2026SP_v2.pdf') and ask if they'd like to rename it. Pass their preferred name as customFilename, or omit it to keep the original.",
+        "Download a file from Brightspace to a local directory. Three sources are supported: (1) course content files via topicId, (2) the student's own dropbox submission files via folderId + fileId, and (3) instructor-uploaded attachments on a dropbox folder (assignment spec PDFs, starter-code archives, etc.) via folderId + attachmentId. Use this when the user wants to download, save, or get a file from Brightspace course content, their own submissions, or an assignment's attached files. IMPORTANT: You MUST ask the user where they want to save the file before calling this tool. Never guess or assume a download directory. After identifying the file to download, suggest a clean readable filename to the user (e.g., 'Lecture 7 - Memory Management.pdf' instead of 'L07_CS251_2026SP_v2.pdf') and ask if they'd like to rename it. Pass their preferred name as customFilename, or omit it to keep the original.",
       inputSchema: DownloadFileSchema,
     },
     async (args: any) => {
@@ -39,8 +39,15 @@ export function registerDownloadFile(
         log("DEBUG", "download_file tool called", { args });
 
         // Parse and validate input
-        const { courseId, topicId, folderId, fileId, downloadPath, customFilename } =
+        const { courseId, topicId, folderId, fileId, attachmentId, downloadPath, customFilename } =
           DownloadFileSchema.parse(args);
+
+        // fileId and attachmentId are mutually exclusive — they hit different endpoints
+        if (fileId !== undefined && attachmentId !== undefined) {
+          return errorResponse(
+            "fileId (submission file) and attachmentId (instructor attachment) are mutually exclusive. Pass only one."
+          );
+        }
 
         // Validate courseId
         validateContentId(courseId);
@@ -81,7 +88,7 @@ export function registerDownloadFile(
             customFilename
           );
         } else if (folderId !== undefined && fileId !== undefined) {
-          // Submission file download
+          // Student's own submission file download
           validateContentId(folderId);
           validateContentId(fileId);
           return await downloadSubmissionFile(
@@ -92,9 +99,21 @@ export function registerDownloadFile(
             downloadPath,
             customFilename
           );
+        } else if (folderId !== undefined && attachmentId !== undefined) {
+          // Instructor-uploaded attachment on the assignment
+          validateContentId(folderId);
+          validateContentId(attachmentId);
+          return await downloadFolderAttachment(
+            apiClient,
+            courseId,
+            folderId,
+            attachmentId,
+            downloadPath,
+            customFilename
+          );
         } else {
           return errorResponse(
-            "Either topicId (for content files) or both folderId and fileId (for submission files) must be provided"
+            "You must provide one of: topicId (for course content), folderId + fileId (for your own submission files), or folderId + attachmentId (for instructor-uploaded assignment attachments)."
           );
         }
       } catch (error) {
@@ -286,5 +305,102 @@ async function downloadSubmissionFile(
     mimeType: result.mime,
     originalFilename,
     message: `File downloaded successfully to ${result.path}`,
+  });
+}
+
+/**
+ * Download an instructor-uploaded attachment on a dropbox folder.
+ *
+ * These are the files the instructor attached to the assignment description
+ * itself — project specs, starter code, rubric handouts, etc. They are
+ * distinct from student submission files (which live under
+ * .../submissions/<submissionId>/files/...). The D2L endpoint is:
+ *
+ *   GET /d2l/api/le/(version)/(orgUnitId)/dropbox/folders/(folderId)/attachments/(fileId)
+ *
+ * It streams the file directly with Content-Type, Content-Length, and
+ * Content-Disposition headers set, so we can reuse the same pattern used
+ * for content-file downloads.
+ */
+async function downloadFolderAttachment(
+  apiClient: D2LApiClient,
+  courseId: number,
+  folderId: number,
+  attachmentId: number,
+  downloadPath: string,
+  customFilename?: string
+): Promise<any> {
+  log(
+    "INFO",
+    `Downloading folder attachment: courseId=${courseId}, folderId=${folderId}, attachmentId=${attachmentId}`
+  );
+
+  const apiPath = apiClient.le(
+    courseId,
+    `/dropbox/folders/${folderId}/attachments/${attachmentId}`
+  );
+
+  const response = await apiClient.getRaw(apiPath);
+
+  // Pre-check Content-Length to fail fast on oversized files without buffering
+  const contentLength = parseInt(
+    response.headers.get("Content-Length") ?? "0",
+    10
+  );
+  if (contentLength > MAX_FILE_SIZE) {
+    return errorResponse(
+      `Attachment too large (${Math.round(contentLength / 1024 / 1024)}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`
+    );
+  }
+
+  // Parse filename from Content-Disposition. The D2L response uses the
+  // RFC 5987 extended form: filename*=UTF-8''Project.pdf; filename="Project.pdf"
+  // We try the extended form first, then fall back to the plain quoted form.
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  let filename = "attachment";
+  const extMatch = disposition.match(/filename\*\s*=\s*(?:UTF-8'')?([^;\n]+)/i);
+  if (extMatch?.[1]) {
+    try {
+      filename = decodeURIComponent(extMatch[1].trim().replace(/^["']|["']$/g, ""));
+    } catch {
+      filename = extMatch[1].trim().replace(/^["']|["']$/g, "");
+    }
+  } else {
+    const plainMatch = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (plainMatch?.[1]) {
+      filename = plainMatch[1].replace(/['"]/g, "");
+    }
+  }
+  log("DEBUG", `Attachment Content-Disposition filename: ${filename}`);
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  if (buffer.length > MAX_FILE_SIZE) {
+    return errorResponse(
+      `Attachment too large (${Math.round(buffer.length / 1024 / 1024)}MB). Maximum allowed: ${MAX_FILE_SIZE / 1024 / 1024}MB`
+    );
+  }
+
+  const originalFilename = filename;
+  const effectiveFilename = customFilename || filename;
+
+  const result = await secureDownload({
+    targetDir: downloadPath,
+    filename: effectiveFilename,
+    data: buffer,
+  });
+
+  log(
+    "INFO",
+    `Folder attachment downloaded successfully: ${result.path} (${result.size} bytes, ${result.mime})`
+  );
+
+  return toolResponse({
+    success: true,
+    filePath: result.path,
+    fileSize: result.size,
+    mimeType: result.mime,
+    originalFilename,
+    message: `Attachment downloaded successfully to ${result.path}`,
   });
 }

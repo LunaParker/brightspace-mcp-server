@@ -14,6 +14,19 @@ import { applyCourseFilter } from "../utils/course-filter.js";
 import type { AppConfig } from "../types/index.js";
 
 // D2L Dropbox API types
+interface DropboxFileAttachment {
+  FileId: number;
+  FileName: string;
+  Size: number;
+}
+
+interface DropboxLinkAttachment {
+  LinkId?: number;
+  Title?: string;
+  Href?: string;
+  Target?: string;
+}
+
 interface DropboxFolder {
   Id: number;
   CategoryId: number | null;
@@ -40,6 +53,12 @@ interface DropboxFolder {
   } | null;
   GroupTypeId: number | null; // null = individual, non-null = group
   SubmissionType: number | null;
+  // Instructor-uploaded files attached to the assignment description
+  // (e.g. project spec PDFs, starter-code archives). Populated by the
+  // list endpoint /d2l/api/le/<ver>/<ou>/dropbox/folders/.
+  Attachments?: DropboxFileAttachment[];
+  // Instructor-provided URL links attached to the assignment.
+  LinkAttachments?: DropboxLinkAttachment[];
 }
 
 interface DropboxSubmission {
@@ -178,6 +197,19 @@ async function fetchCourseAssignments(
         dueDate: folder.DueDate,
         points: folder.Assessment?.ScoreDenominator ?? null,
         isGroup: folder.GroupTypeId !== null,
+        // Instructor-uploaded files attached to the assignment description.
+        // Download these with download_file using folderId + attachmentId.
+        attachments: folder.Attachments?.map((a) => ({
+          fileId: a.FileId,
+          fileName: a.FileName,
+          size: a.Size,
+        })) ?? [],
+        // Instructor-provided URL links attached to the assignment.
+        linkAttachments: folder.LinkAttachments?.filter((l) => l.Href).map((l) => ({
+          title: l.Title ?? null,
+          href: l.Href,
+          target: l.Target ?? null,
+        })) ?? [],
         rubric: folder.Assessment?.Rubrics?.map((r) => ({
           name: r.Name,
           criteria: r.Criteria?.map((c) => ({

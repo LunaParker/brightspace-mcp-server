@@ -44,6 +44,22 @@ every other institution.
    telling the user to run `brightspace-entra-auth` in a terminal.
 7. **7-day default `tokenTtl`** for `entra`, matching the typical Entra
    conditional-access re-authentication window (configurable per install).
+8. **Instructor attachment support on assignments.** `get_assignments` now
+   returns an `attachments` array for each dropbox folder with the
+   instructor-uploaded files attached to the assignment description
+   (project specs, starter-code archives, rubric handouts, etc.), read
+   directly from the folder's `Attachments` field on the D2L list
+   endpoint. `download_file` accepts a new `attachmentId` parameter
+   (mutually exclusive with `fileId`) that hits
+   `GET /d2l/api/le/<ver>/<ou>/dropbox/folders/<folderId>/attachments/<attachmentId>`
+   and writes the file through the same secure-download pipeline used for
+   course content and student submissions. A `linkAttachments` array is
+   also surfaced for assignments that attach URL links instead of files.
+9. **Extended MIME allowlist.** The downloader's magic-byte allowlist now
+   covers 7-Zip (`application/x-7z-compressed`), gzip, tar, and bzip2
+   archives in addition to the upstream ZIP entry, so `.7z` starter-code
+   archives and the like can be downloaded without tripping the safety
+   check.
 
 Nothing is removed. Purdue's automated flow still works if you set
 `"ssoProvider": "purdue"` in `~/.brightspace-mcp/config.json` and supply
