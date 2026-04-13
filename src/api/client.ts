@@ -237,8 +237,15 @@ export class D2LApiClient {
         throw new RateLimitError(path, retryAfterSeconds);
       }
 
-      // Handle 403 (common for past-semester courses)
+      // Handle 403 — distinguish "dead session" from "permission denied".
+      // Cookie-based tokens may get 403 (not 401) when the session expires
+      // server-side, so we probe /whoami to check session health.
       if (response.status === 403) {
+        if (!isRetry && (await this.isSessionDead(token))) {
+          log("DEBUG", "403 caused by dead session — treating as auth expiry");
+          await this.tokenManager.clearToken();
+          throw new ApiError(401, path, this.authExpiredMessage);
+        }
         const responseText = await response.text();
         throw new ApiError(403, path, responseText);
       }
@@ -327,8 +334,13 @@ export class D2LApiClient {
         throw new RateLimitError(path, retryAfterSeconds);
       }
 
-      // Handle 403 (common for past-semester courses or no access)
+      // Handle 403 — distinguish "dead session" from "permission denied"
       if (response.status === 403) {
+        if (!isRetry && (await this.isSessionDead(token))) {
+          log("DEBUG", "403 caused by dead session — treating as auth expiry");
+          await this.tokenManager.clearToken();
+          throw new ApiError(401, path, this.authExpiredMessage);
+        }
         const responseText = await response.text();
         throw new ApiError(403, path, responseText);
       }
@@ -362,6 +374,27 @@ export class D2LApiClient {
         `Request to ${path} failed: ${message}`,
         error instanceof Error ? error : undefined,
       );
+    }
+  }
+
+  /**
+   * Probe /whoami to check whether the session itself is dead.
+   * Returns true when the session is no longer valid (i.e. the 403 the
+   * caller just received is an auth failure, not a permission issue).
+   */
+  private async isSessionDead(token: TokenData): Promise<boolean> {
+    try {
+      const url = `${this.baseUrl}/d2l/api/lp/1.45/users/whoami`;
+      const headers = this.buildAuthHeaders(token);
+      const response = await fetch(url, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      return !response.ok;
+    } catch {
+      // Network error — assume session might be dead
+      return true;
     }
   }
 

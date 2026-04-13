@@ -20,16 +20,22 @@ interface FilterableCourse {
 }
 
 /**
- * True if `now` falls within [startDate, endDate], treating nulls as
- * open-ended on either side. Matches Brightspace's "Current Courses"
- * widget: an ongoing resource org with no dates stays visible, a past
- * semester course drops out, and an upcoming term hasn't started yet.
+ * True if `now` falls within [startDate, endDate].
+ *
+ * When both dates are null the course has no enrollment window at all —
+ * it's almost certainly an informational org unit (e.g. "Waterloo Campus",
+ * "Academic Integrity") rather than a term-bound course, so we return
+ * false. A single null side is treated as open-ended (start-only means
+ * "not yet ended", end-only means "already started").
  */
 function isCurrentlyInWindow(
   startDate: string | null | undefined,
   endDate: string | null | undefined,
   now: number
 ): boolean {
+  // Both null → undated org unit, not a current semester course.
+  if (!startDate && !endDate) return false;
+
   if (startDate) {
     const start = Date.parse(startDate);
     if (!Number.isNaN(start) && start > now) return false;
