@@ -30,8 +30,29 @@ function isNpxCache(): boolean {
   return /[\\/]_npx[\\/][^\\/]+[\\/]node_modules[\\/]brightspace-mcp-server/.test(normalized);
 }
 
-function getNpxHashDir(): string {
-  return resolve(projectRoot, "..", "..");
+async function clearAllNpxCaches(): Promise<number> {
+  const { homedir } = await import("node:os");
+  const npxCacheRoot = resolve(homedir(), ".npm", "_npx");
+  const { readdir } = await import("node:fs/promises");
+
+  let cleared = 0;
+  try {
+    const entries = await readdir(npxCacheRoot);
+    for (const entry of entries) {
+      const pkgPath = resolve(npxCacheRoot, entry, "node_modules", "brightspace-mcp-server");
+      try {
+        const { access } = await import("node:fs/promises");
+        await access(pkgPath);
+        await rm(resolve(npxCacheRoot, entry), { recursive: true, force: true });
+        cleared++;
+      } catch {
+        // Not a brightspace cache entry, skip
+      }
+    }
+  } catch {
+    // npx cache dir doesn't exist or not readable
+  }
+  return cleared;
 }
 
 const FALLBACK_MSG = (old: string, latest: string) =>
@@ -47,11 +68,10 @@ export function initUpdateChecker(): void {
     if (!latest || latest === installed) return;
 
     if (isNpxCache()) {
-      const hashDir = getNpxHashDir();
-      rm(hashDir, { recursive: true, force: true })
-        .then(() => {
+      clearAllNpxCaches()
+        .then((count) => {
           notice =
-            `Auto-updated: npx cache cleared (v${installed} → v${latest}). ` +
+            `Auto-updated: cleared ${count} npx cache(s) (v${installed} → v${latest}). ` +
             "The new version will be downloaded on next restart.";
         })
         .catch(() => {

@@ -2,13 +2,15 @@
 /**
  * Brightspace MCP Server
  * Copyright (c) 2025 Rohan Muppa. All rights reserved.
- * Licensed under AGPL-3.0 — see LICENSE file for details.
+ * Licensed under MIT — see LICENSE file for details.
  *
  * https://github.com/rohanmuppa/brightspace-mcp-server
  */
 
 import * as fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { loadConfig } from "./utils/config.js";
 import { BrowserAuth, TokenManager } from "./auth/index.js";
@@ -16,13 +18,27 @@ import { BrowserAuth, TokenManager } from "./auth/index.js";
 // Load .env file so credentials are available via process.env
 dotenv.config({ quiet: true });
 
+const pkgVersion = (() => {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(
+        path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"),
+        "utf-8",
+      ),
+    );
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+
 async function main(): Promise<void> {
   try {
     // Load configuration from environment
     const config = loadConfig();
 
     // Print header
-    console.log("\n=== Brightspace Authentication — by Rohan Muppa ===\n");
+    console.log(`\n=== Brightspace Authentication v${pkgVersion} - by Rohan Muppa ===\n`);
 
     // Check for credentials and provide status
     if (config.username && config.password) {

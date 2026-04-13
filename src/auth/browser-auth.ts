@@ -91,12 +91,15 @@ export class BrowserAuth {
     const args = ["--disable-blink-features=AutomationControlled"];
 
     if (process.platform === "win32") {
-      // Reduce GPU issues on Windows (common cause of rendering failures)
       args.push("--disable-gpu");
     }
 
+    // On macOS, NSPersistentUIRestorer is disabled via `defaults write` in
+    // applyMacOSCrashGuard() — see issue #10. Passing "-ApplePersistenceIgnoreState YES"
+    // as argv doesn't work here because Playwright's launchPersistentContext rejects
+    // non-flag positional arguments.
+
     if (BrowserAuth.isWSLOrDocker()) {
-      // WSL and Docker lack a proper sandboxing namespace — Chromium won't launch without this
       args.push("--no-sandbox", "--disable-setuid-sandbox");
       log("INFO", "Detected WSL/Docker environment — launching Chromium with --no-sandbox");
     }
@@ -104,11 +107,98 @@ export class BrowserAuth {
     return args;
   }
 
+  /**
+   * Prevent Chrome for Testing from SIGTRAP'ing on launch on macOS (issue #10).
+   *
+   * Three layers, all idempotent and cheap:
+   *   1. ApplePersistenceIgnoreState — disables NSPersistentUIRestorer's crash-prompt
+   *      modal, which Chrome for Testing's AppKit bridge cannot handle.
+   *   2. IIO_LaunchInfo=0 — resets LaunchServices' per-app crash counter so macOS
+   *      stops triggering the recovery pathway in the first place.
+   *   3. Nuke the Cocoa saved-application-state bundle — if it exists, AppKit tries
+   *      to replay window state during launch and can crash the browser process.
+   *
+   * Runs before every launch. None of these are destructive to user data; Chrome
+   * for Testing is a disposable test profile.
+   */
+  private static async applyMacOSCrashGuard(): Promise<void> {
+    if (process.platform !== "darwin") return;
+
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+
+    try {
+      await execFileAsync("defaults", [
+        "write",
+        "com.google.chrome.for.testing",
+        "ApplePersistenceIgnoreState",
+        "-bool",
+        "yes",
+      ]);
+    } catch {
+      // Non-fatal
+    }
+
+    try {
+      await execFileAsync("defaults", [
+        "write",
+        "com.google.chrome.for.testing",
+        "IIO_LaunchInfo",
+        "-int",
+        "0",
+      ]);
+    } catch {
+      // Non-fatal
+    }
+
+    try {
+      const savedState = path.join(
+        os.homedir(),
+        "Library",
+        "Saved Application State",
+        "com.google.chrome.for.testing.savedState"
+      );
+      await fs.rm(savedState, { recursive: true, force: true });
+    } catch {
+      // Non-fatal
+    }
+
+    log("DEBUG", "Applied macOS crash guards for Chrome for Testing");
+  }
+
+  /**
+   * Recovery step: the current browser-data profile is corrupted in a way that
+   * makes Chromium SIGTRAP during launch (issue #10). Move it aside so the next
+   * launch attempt gets a clean profile. Cheap — user just re-authenticates.
+   */
+  private async quarantineBrowserDataDir(browserDataDir: string): Promise<void> {
+    try {
+      const stamp = Date.now();
+      const quarantined = `${browserDataDir}.corrupted.${stamp}`;
+      await fs.rename(browserDataDir, quarantined);
+      log(
+        "WARN",
+        `Quarantined corrupted browser profile to ${quarantined} — starting fresh`
+      );
+    } catch (error) {
+      // If rename fails (permissions, missing dir), try a recursive delete instead.
+      try {
+        await fs.rm(browserDataDir, { recursive: true, force: true });
+        log("WARN", "Deleted corrupted browser profile — starting fresh");
+      } catch (rmError) {
+        log("WARN", "Failed to quarantine browser profile", rmError);
+      }
+    }
+  }
+
   async authenticate(): Promise<TokenData> {
     let context: BrowserContext | null = null;
 
     try {
       log("INFO", "Starting browser authentication");
+
+      await BrowserAuth.applyMacOSCrashGuard();
 
       const mkdirOpts: { recursive: true; mode?: number } = { recursive: true };
       if (process.platform !== "win32") {
@@ -140,6 +230,23 @@ export class BrowserAuth {
 
       log("INFO", "Browser context launched");
 
+      // If the user Ctrl+C's while Chrome is running, Node tears down the
+      // subprocess with SIGKILL — Chrome writes "Crashed" to exit_type, the
+      // LaunchServices crash counter ticks up, and the next launch can SIGTRAP.
+      // Hook SIGINT/SIGTERM so we close the context gracefully first. See issue #10.
+      const contextRef = context;
+      const cleanShutdown = async (signal: NodeJS.Signals) => {
+        log("WARN", `Received ${signal} — closing browser cleanly`);
+        try {
+          await contextRef.close();
+        } catch {
+          // Already closing
+        }
+        process.exit(130);
+      };
+      process.once("SIGINT", cleanShutdown);
+      process.once("SIGTERM", cleanShutdown);
+
       // Load saved storage state if it exists (cookies + localStorage)
       // This works around Playwright bug #36139 where session cookies don't persist
       await this.loadStorageState(context);
@@ -169,13 +276,16 @@ export class BrowserAuth {
       //
       // We try (1) first because it's fast and hits on ~every tenant, then
       // race (2) against the remaining active strategies.
+      log("INFO", alreadyAuthenticated
+        ? "Session cookies active — trying to extract API token"
+        : "Login complete — extracting API token from session");
+
       const extracted = await this.captureTokenFromLandedPage(
         page,
         context,
         tokenPromise,
         /* interceptGraceMs */ alreadyAuthenticated ? 15000 : 45000
       );
-
       if (extracted) {
         await this.saveStorageState(context);
         log("INFO", "Authentication complete");
@@ -300,6 +410,7 @@ export class BrowserAuth {
       log("INFO", "Captured valid Bearer token from localStorage");
       return mkTokenData(lsToken);
     }
+    if (lsToken) log("WARN", "localStorage Bearer token failed validation, trying next strategy");
 
     // Give the passive interception a short window to resolve. Many D2L
     // tenants emit a Bearer token in a background request within the first
@@ -316,16 +427,23 @@ export class BrowserAuth {
       return mkTokenData(interceptionRaceWinner);
     }
 
-    // Strategy 1: Poke an API endpoint to try to trigger Bearer-bearing
-    // requests. D2L's frontend sometimes only fetches tokens lazily.
+    // Strategy 1: Force a Bearer fetch by hitting the API, then re-check localStorage.
+    // D2L's frontend sometimes only fetches tokens lazily.
     try {
-      log("DEBUG", "Navigating to API endpoint to trigger Bearer request");
+      log("DEBUG", "Navigating to API endpoint to trigger token capture");
       await page.goto(
         `${this.config.baseUrl}/d2l/api/lp/1.57/users/whoami`,
         { waitUntil: "load", timeout: 15000 }
       );
+      // Re-check localStorage after the API nudge — the navigation may have
+      // populated D2L.Fetch.Tokens even if it wasn't there before.
+      const lsToken2 = await this.extractLocalStorageToken(page);
+      if (lsToken2 && (await this.validateToken(lsToken2))) {
+        log("INFO", "Captured valid Bearer token from localStorage after API nudge");
+        return mkTokenData(lsToken2);
+      }
     } catch {
-      log("DEBUG", "Direct API navigation failed (non-fatal)");
+      log("DEBUG", "Direct API navigation did not produce Bearer token");
     }
 
     // Give the passive interception another short window after the poke.
@@ -345,6 +463,7 @@ export class BrowserAuth {
       log("INFO", "Captured valid XSRF token from page context");
       return mkTokenData(xsrfToken);
     }
+    if (xsrfToken) log("WARN", "XSRF token failed validation, trying next strategy");
 
     // Strategy 3: Session cookies used directly as a Cookie header.
     log("INFO", "Trying session-cookie fallback");
@@ -353,6 +472,7 @@ export class BrowserAuth {
       log("INFO", "Captured valid session-cookie token");
       return mkTokenData(cookieToken);
     }
+    if (cookieToken) log("WARN", "Cookie token failed validation");
 
     // Nothing worked.
     log("WARN", "No token capture strategy succeeded on this page");
@@ -833,6 +953,29 @@ export class BrowserAuth {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       const isTimeout = errMsg.includes("Timeout") || errMsg.includes("timeout") || errMsg.includes("hung");
+
+      // macOS: Chrome for Testing died during launch with SIGTRAP / browser
+      // closed. The profile is likely corrupted from prior crashes. Quarantine
+      // it, reapply the crash guards, and retry with a fresh profile.
+      // See issue #10.
+      const isMacBrowserCrash =
+        process.platform === "darwin" &&
+        (errMsg.includes("Target page, context or browser has been closed") ||
+          errMsg.includes("SIGTRAP") ||
+          errMsg.includes("did exit"));
+
+      if (isMacBrowserCrash) {
+        log(
+          "WARN",
+          "Chrome for Testing crashed during launch — quarantining profile and retrying"
+        );
+        await this.quarantineBrowserDataDir(browserDataDir);
+        await BrowserAuth.applyMacOSCrashGuard();
+        return await chromium.launchPersistentContext(browserDataDir, {
+          ...options,
+          timeout: 90000,
+        });
+      }
 
       if (isTimeout) {
         log("WARN", "Browser launch timed out — clearing lock files and retrying");
