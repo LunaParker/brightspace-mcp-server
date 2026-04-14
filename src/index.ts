@@ -94,30 +94,41 @@ if (subcommand === 'setup') {
       // UI. In that case we skip auto-reauth and return a crystal-clear
       // error to the user instead.
       const authRunner = new AuthRunner();
-      const canAutoReauth = config.ssoProvider === "purdue";
       const reauthCommand =
         config.ssoProvider === "entra"
           ? "brightspace-entra-auth"
           : "brightspace-auth";
       const authExpiredMessage =
-        config.ssoProvider === "entra" || config.ssoProvider === "manual"
-          ? `Brightspace session expired. Re-authentication cannot run inside Claude Desktop because it requires a visible browser window. Open a terminal and run \`${reauthCommand}\` to sign in again, then retry this tool.`
-          : "Session expired. Please re-authenticate via brightspace-auth.";
+        `Brightspace session expired. Auto-refresh failed — the Entra SSO session ` +
+        `may have expired. Open a terminal and run \`${reauthCommand}\` to sign in ` +
+        `again (with MFA), then retry this tool.`;
 
-      // Create D2L API Client with auto-reauth support
+      // Create D2L API Client with auto-reauth support.
+      // For Entra/manual providers, we attempt a headless silent refresh first —
+      // this uses the existing browser profile's Entra SSO session to get a fresh
+      // 60-minute JWT without any user interaction. If the Entra session itself
+      // has expired (~7 days), the silent refresh fails and the error message
+      // guides the user to run the interactive CLI.
       const apiClient = new D2LApiClient({
         baseUrl: config.baseUrl,
         tokenManager,
         authExpiredMessage,
         onAuthExpired: async () => {
-          if (canAutoReauth) {
+          if (config.ssoProvider === "purdue") {
             return authRunner.run();
           }
-          log(
-            "WARN",
-            `onAuthExpired: ssoProvider=${config.ssoProvider} — skipping auto-reauth (interactive browser required). User must run \`${reauthCommand}\` in a terminal.`
-          );
-          return false;
+          // Entra / manual: attempt headless silent refresh
+          log("INFO", "onAuthExpired: attempting headless silent refresh...");
+          const success = await authRunner.runSilentRefresh();
+          if (success) {
+            log("INFO", "onAuthExpired: silent refresh succeeded — got fresh JWT");
+          } else {
+            log(
+              "WARN",
+              `onAuthExpired: silent refresh failed. User must run \`${reauthCommand}\` in a terminal.`
+            );
+          }
+          return success;
         },
       });
 
@@ -150,12 +161,14 @@ if (subcommand === 'setup') {
 
           let token = await tokenManager.getToken();
 
-          if (!token && canAutoReauth) {
+          if (!token) {
             log(
               "INFO",
               "check_auth: No valid token, attempting auto-reauthentication..."
             );
-            const success = await authRunner.run();
+            const success = config.ssoProvider === "purdue"
+              ? await authRunner.run()
+              : await authRunner.runSilentRefresh();
             if (success) {
               token = await tokenManager.getToken();
             }
@@ -167,17 +180,14 @@ if (subcommand === 'setup') {
           if (!token) {
             log("INFO", "check_auth: No valid token available");
 
-            const reason = canAutoReauth
-              ? "Auto-reauthentication was attempted but failed."
-              : `Auto-reauthentication is disabled for ssoProvider="${config.ssoProvider}" — the sign-in flow needs a visible browser window and cannot run inside Claude Desktop.`;
-            const instructions = canAutoReauth
-              ? `Please run \`${reauthCommand}\` manually in your terminal to log in. Make sure your credentials in .env are correct and your internet connection is stable.`
-              : `Open a terminal and run \`${reauthCommand}\`. A Chromium window will open — sign in with your organization account (username, password, MFA), wait for Brightspace to load, and then re-run this tool.`;
+            const instructions =
+              `Auto-reauthentication was attempted but failed. ` +
+              `Open a terminal and run \`${reauthCommand}\` to sign in manually.`;
 
             const content: Array<{ type: "text"; text: string }> = [
               {
                 type: "text",
-                text: `Not authenticated with Brightspace. ${reason} ${instructions}`,
+                text: `Not authenticated with Brightspace. ${instructions}`,
               },
             ];
             const notice = getUpdateNotice();

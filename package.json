@@ -9,7 +9,8 @@
     "brightspace-mcp-server": "build/index.js",
     "brightspace-auth": "build/auth-cli.js",
     "brightspace-entra-auth": "build/entra-auth-cli.js",
-    "brightspace-setup": "build/setup.js"
+    "brightspace-setup": "build/setup.js",
+    "brightspace-silent-refresh": "build/silent-refresh-cli.js"
   },
   "files": [
     "build",
@@ -22,6 +23,7 @@
     "start": "node build/index.js",
     "auth": "node build/auth-cli.js",
     "entra-auth": "node build/entra-auth-cli.js",
+    "silent-refresh": "node build/silent-refresh-cli.js",
     "update": "node build/update.js",
     "dev": "tsc --watch",
     "test": "vitest",
