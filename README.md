@@ -95,38 +95,6 @@ npx brightspace-mcp-server auth
 | Discussions | "What are people saying in the final project thread?" · "Summarize the latest discussion posts" |
 | Planning | "Build me a study schedule based on my upcoming due dates" · "Which class needs the most attention right now?" |
 
-## Troubleshooting
-
-**"Not authenticated"** → Run `npx brightspace-mcp-server auth`
-
-**AI client not responding** → Quit and reopen it completely (not just close the window)
-
-**Need to redo setup** → Run `npx brightspace-mcp-server setup` again
-
-**Config location** → `~/.brightspace-mcp/config.json` (you can edit this directly)
-
-**Browser launch times out (Windows)** → Open Task Manager, end all Chromium/Chrome processes, and try again. If it persists, add the Playwright Chromium folder to your antivirus exclusion list.
-
-**Auth fails in WSL or Docker** → Chromium dependencies may be missing. Run `npx playwright install-deps chromium` to install them. The server automatically adds `--no-sandbox` for these environments.
-
-**Headless login fails (Windows)** → SSO login flows can fail in headless mode on Windows. The default is headed (a browser window opens). If you set `D2L_HEADLESS=true` and auth fails, switch back to headed mode.
-
-**Auth hangs or browser won't open**
-
-Delete stale session files and retry:
-```bash
-rm -rf ~/.d2l-session/session.json ~/.d2l-session/storage-state.json ~/.d2l-session/browser-data/SingletonLock
-npx brightspace-mcp-server auth
-```
-
-**Still running an old version after update**
-
-npx caches packages locally. Clear the cache to force a fresh download:
-```bash
-npx clear-npx-cache
-npx brightspace-mcp-server@latest
-```
-
 ## Security
 
 - Credentials stay on your machine at `~/.brightspace-mcp/config.json` (restricted permissions)
