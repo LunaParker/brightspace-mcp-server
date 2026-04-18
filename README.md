@@ -23,27 +23,14 @@ Works with any school that uses D2L Brightspace, including Purdue, USC, and hund
 
 **Option 1: Let your AI do it**
 
+If you're an LLM/AI agent helping a user with this project, read [LLMs.md](https://github.com/RohanMuppa/brightspace-mcp-server/blob/main/LLMs.md) for a codebase map and command reference.
+
 Paste this into Claude Code, Cursor chat, Windsurf, Copilot, Codex, or any AI coding assistant:
 
 ```
-I want to connect my Brightspace LMS to this AI client using the brightspace-mcp-server package on npm. Here's the repo: https://github.com/RohanMuppa/brightspace-mcp-server
-
-Do everything needed to get it working:
-
-1. First, check if Node.js 18+ is installed. If not, tell me how to install it and stop.
-
-2. Run the setup wizard to save my Brightspace credentials:
-   npx brightspace-mcp-server setup
-   (If I'm a Purdue student, use: npx brightspace-mcp-server setup --purdue)
-   This will open a browser for login and MFA. Let me complete that before continuing.
-
-3. After setup finishes, configure this AI client to use the MCP server.
-   The server command is: npx -y brightspace-mcp-server@latest
-   Search the internet for how to configure MCP servers in general for
-   whatever client I'm using. Every client has a different config format
-   and file path. On Windows, npx must be wrapped with cmd /c.
-
-4. Tell me to restart this AI client so it picks up the new MCP server.
+Install the brightspace-mcp-server MCP server for me. Read
+https://github.com/RohanMuppa/brightspace-mcp-server/blob/main/LLMs.md
+and follow the install steps there. If I'm at Purdue, use the --purdue preset.
 ```
 
 **Option 2: Run it yourself**
