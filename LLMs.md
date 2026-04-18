@@ -162,9 +162,3 @@ Add a preset to `SCHOOL_PRESETS` in `src/setup.ts`. If the school uses a non-sta
 Publishing is automated by GitHub Actions on push to `main` when `version` in `package.json` changes.
 
 Always bump `version` in `package.json` in the same commit as any code or docs change. The Action skips publish if the version is unchanged, which means users will not receive the update via `npx ...@latest`.
-
-## Commit format
-
-`{type}: {description}` where type is one of `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
-
-No `Co-Authored-By` trailers. No phase or plan numbers in scope.

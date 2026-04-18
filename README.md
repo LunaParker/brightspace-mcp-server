@@ -23,14 +23,12 @@ Works with any school that uses D2L Brightspace, including Purdue, USC, and hund
 
 **Option 1: Let your AI do it**
 
-If you're an LLM/AI agent helping a user with this project, read [LLMs.md](https://github.com/RohanMuppa/brightspace-mcp-server/blob/main/LLMs.md) for a codebase map and command reference.
-
-Paste this into Claude Code, Cursor chat, Windsurf, Copilot, Codex, or any AI coding assistant:
+Paste this into Claude Code, Cursor, Windsurf, Copilot, Codex, or any AI coding assistant:
 
 ```
-Install the brightspace-mcp-server MCP server for me. Read
+Install brightspace-mcp-server for me by following
 https://github.com/RohanMuppa/brightspace-mcp-server/blob/main/LLMs.md
-and follow the install steps there. If I'm at Purdue, use the --purdue preset.
+(use --purdue if I'm at Purdue).
 ```
 
 **Option 2: Run it yourself**
