@@ -1,7 +1,7 @@
 /**
  * Purdue Brightspace MCP Server
- * Copyright (c) 2025 Rohan Muppa. All rights reserved.
- * Licensed under AGPL-3.0 — see LICENSE file for details.
+ * Copyright (c) 2026 Rohan Muppa. All rights reserved.
+ * Licensed under MIT — see LICENSE file for details.
  */
 
 import { z } from "zod";
@@ -62,7 +62,7 @@ export const DownloadFileSchema = z.object({
     .describe("Specific file ID within a dropbox submission."),
   downloadPath: z.string().min(1)
     .describe("Absolute path to the directory where the file should be saved."),
-  customFilename: z.string().optional()
+  customFilename: z.string().max(255).optional()
     .describe("Custom filename for the downloaded file (include extension). If not provided, uses the original filename from Brightspace."),
 });
 
@@ -87,6 +87,6 @@ export const GetRosterSchema = z.object({
     .describe("Course ID to get roster for."),
   includeStudents: z.boolean().default(false)
     .describe("Include students in results. Default is instructors and TAs only."),
-  searchTerm: z.string().optional()
+  searchTerm: z.string().max(200).optional()
     .describe("Optional search term to filter by name."),
 });
