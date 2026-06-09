@@ -1,7 +1,7 @@
 /**
  * Purdue Brightspace MCP Server
- * Copyright (c) 2025 Rohan Muppa. All rights reserved.
- * Licensed under AGPL-3.0 — see LICENSE file for details.
+ * Copyright (c) 2026 Rohan Muppa. All rights reserved.
+ * Licensed under MIT — see LICENSE file for details.
  */
 
 import { z } from "zod";
@@ -64,7 +64,7 @@ export const DownloadFileSchema = z.object({
     .describe("File ID of an instructor-uploaded attachment on a dropbox folder (e.g. a project spec PDF or starter-code archive listed in get_assignments' `attachments` array). Mutually exclusive with fileId."),
   downloadPath: z.string().min(1).optional()
     .describe("Absolute path to the directory where the file should be saved on the HOST filesystem (the same filesystem the MCP server runs on). Omit this to receive the file inline in the tool response instead — this is the right choice inside Claude Desktop, because the MCP server's host filesystem is NOT the same as Claude's analysis/bash sandbox, so a file written to disk here will not be visible to Claude's other tools."),
-  customFilename: z.string().optional()
+  customFilename: z.string().max(255).optional()
     .describe("Custom filename for the downloaded file (include extension). If not provided, uses the original filename from Brightspace."),
 });
 
@@ -89,6 +89,6 @@ export const GetRosterSchema = z.object({
     .describe("Course ID to get roster for."),
   includeStudents: z.boolean().default(false)
     .describe("Include students in results. Default is instructors and TAs only."),
-  searchTerm: z.string().optional()
+  searchTerm: z.string().max(200).optional()
     .describe("Optional search term to filter by name."),
 });

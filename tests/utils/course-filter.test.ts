@@ -108,13 +108,13 @@ describe("applyCourseFilter", () => {
       );
       // Expected to keep:
       //   2 (Winter 2026, in window)
-      //   4 (no dates, open-ended)
       //   6 (no start, end in 2027)
       //   7 (start in 2026-01, no end)
-      //   5 (inactive but window doesn't matter — 2021 ended, so dropped)
       //   NOT 1 (2022 ended)
       //   NOT 3 (2026-09 not started)
-      expect(out.map((c) => c.id).sort()).toEqual([2, 4, 6, 7]);
+      //   NOT 4 (both dates null → treated as an undated org unit, not a current semester course)
+      //   NOT 5 (inactive past course, 2021 ended)
+      expect(out.map((c) => c.id).sort()).toEqual([2, 6, 7]);
     });
 
     it("keeps a course whose endDate is exactly now", () => {
@@ -165,8 +165,8 @@ describe("applyCourseFilter", () => {
         cfg({ activeOnly: true, currentOnly: true }),
         NOW
       );
-      // Start from activeOnly: [1,2,3,4,6,7], then drop 1 and 3
-      expect(out.map((c) => c.id).sort()).toEqual([2, 4, 6, 7]);
+      // Start from activeOnly: [1,2,3,4,6,7], then drop 1 (past), 3 (future), and 4 (undated org unit)
+      expect(out.map((c) => c.id).sort()).toEqual([2, 6, 7]);
     });
   });
 

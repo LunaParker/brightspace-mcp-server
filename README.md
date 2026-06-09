@@ -214,35 +214,22 @@ on startup.
 - **You actually want the Purdue flow.** Set `"ssoProvider": "purdue"` in
   `config.json` and supply `username` / `password`. Nothing Purdue-specific
   was removed.
+- **Browser launch times out (Windows).** Open Task Manager, end all
+  Chromium/Chrome processes, and try again. If it persists, add the
+  Playwright Chromium folder to your antivirus exclusion list.
+- **Auth fails in WSL or Docker.** Chromium dependencies may be missing.
+  Run `npx playwright install-deps chromium` to install them. The server
+  automatically adds `--no-sandbox` for these environments.
+- **Headless login fails (Windows).** SSO login flows can fail in headless
+  mode on Windows. The default is headed (a browser window opens). If you
+  set `D2L_HEADLESS=true` and auth fails, switch back to headed mode.
+- **Auth hangs or browser won't open.** Delete stale session files and
+  retry:
 
-## Credit
-
-**Need to redo setup** (upstream `npx` users) → Run `npx brightspace-mcp-server setup` again
-
-**Config location** → `~/.brightspace-mcp/config.json` (you can edit this directly)
-
-**Browser launch times out (Windows)** → Open Task Manager, end all Chromium/Chrome processes, and try again. If it persists, add the Playwright Chromium folder to your antivirus exclusion list.
-
-**Auth fails in WSL or Docker** → Chromium dependencies may be missing. Run `npx playwright install-deps chromium` to install them. The server automatically adds `--no-sandbox` for these environments.
-
-**Headless login fails (Windows)** → SSO login flows can fail in headless mode on Windows. The default is headed (a browser window opens). If you set `D2L_HEADLESS=true` and auth fails, switch back to headed mode.
-
-**Auth hangs or browser won't open**
-
-Delete stale session files and retry:
-```bash
-rm -rf ~/.d2l-session/session.json ~/.d2l-session/storage-state.json ~/.d2l-session/browser-data/SingletonLock
-npm run entra-auth          # this fork
-npx brightspace-mcp-server auth  # upstream
-```
-
-**Still running an old version after update** (upstream `npx` users)
-
-npx caches packages locally. Clear the cache to force a fresh download:
-```bash
-npx clear-npx-cache
-npx brightspace-mcp-server@latest
-```
+  ```bash
+  rm -rf ~/.d2l-session/session.json ~/.d2l-session/storage-state.json ~/.d2l-session/browser-data/SingletonLock
+  npm run entra-auth
+  ```
 
 ## Credit
 

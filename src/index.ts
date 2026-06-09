@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Brightspace MCP Server
- * Copyright (c) 2025 Rohan Muppa. All rights reserved.
+ * Copyright (c) 2026 Rohan Muppa. All rights reserved.
  * Licensed under MIT — see LICENSE file for details.
  *
  * https://github.com/rohanmuppa/brightspace-mcp-server
