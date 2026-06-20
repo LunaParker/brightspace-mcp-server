@@ -1,7 +1,7 @@
 {
-  "name": "brightspace-mcp-server",
+  "name": "d2l-mcp-entra",
   "version": "1.2.7",
-  "mcpName": "io.github.rohanmuppa/brightspace",
+  "mcpName": "io.github.lunaparker/d2l-mcp-entra",
   "description": "MCP server for Brightspace (D2L). Check grades, due dates, assignments, announcements, syllabus, rosters and more via Claude, ChatGPT, Cursor, Windsurf, or any MCP client.",
   "type": "module",
   "main": "build/index.js",
@@ -53,13 +53,13 @@
   },
   "license": "MIT",
   "author": "Rohan Muppa",
-  "homepage": "https://github.com/RohanMuppa/brightspace-mcp-server",
+  "homepage": "https://github.com/LunaParker/brightspace-mcp-server",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RohanMuppa/brightspace-mcp-server.git"
+    "url": "https://github.com/LunaParker/brightspace-mcp-server.git"
   },
   "bugs": {
-    "url": "https://github.com/RohanMuppa/brightspace-mcp-server/issues"
+    "url": "https://github.com/LunaParker/brightspace-mcp-server/issues"
   },
   "keywords": [
     "mcp",

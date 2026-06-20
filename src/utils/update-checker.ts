@@ -1,98 +1,22 @@
 /**
- * Background npm update checker — non-blocking fetch on startup.
- * Compares installed version against latest on npm registry.
- * If a newer version exists, auto-updates (clears npx cache or
- * runs npm install -g) so the next launch picks up the new version.
+ * Update checker — DISABLED in this fork.
+ *
+ * The upstream implementation queried the npm registry for
+ * `brightspace-mcp-server` and, on ANY version mismatch, ran
+ * `npm install -g brightspace-mcp-server@latest`. Because this fork shared the
+ * upstream's npm name, that logic reinstalled (and even downgraded to) the
+ * upstream package over this fork's global install — wiping the Entra auth
+ * code on 2026-06-19. This fork is maintained via git (origin/main), not npm,
+ * so the background auto-updater is intentionally a no-op.
+ *
+ * Do NOT re-enable this. If you want a manual, git-based update, use
+ * `npm run update` (see src/update.ts), which pulls from origin/main.
  */
 
-import { exec } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve, sep } from "node:path";
-
-const __filename = fileURLToPath(import.meta.url);
-const projectRoot = resolve(dirname(__filename), "..", "..");
-
-let notice: string | null = null;
-
-function getInstalledVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(projectRoot, "package.json"), "utf-8"));
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-function isNpxCache(): boolean {
-  const normalized = projectRoot.split(sep).join("/");
-  return /[\\/]_npx[\\/][^\\/]+[\\/]node_modules[\\/]brightspace-mcp-server/.test(normalized);
-}
-
-async function clearAllNpxCaches(): Promise<number> {
-  const { homedir } = await import("node:os");
-  const npxCacheRoot = resolve(homedir(), ".npm", "_npx");
-  const { readdir } = await import("node:fs/promises");
-
-  let cleared = 0;
-  try {
-    const entries = await readdir(npxCacheRoot);
-    for (const entry of entries) {
-      const pkgPath = resolve(npxCacheRoot, entry, "node_modules", "brightspace-mcp-server");
-      try {
-        const { access } = await import("node:fs/promises");
-        await access(pkgPath);
-        await rm(resolve(npxCacheRoot, entry), { recursive: true, force: true });
-        cleared++;
-      } catch {
-        // Not a brightspace cache entry, skip
-      }
-    }
-  } catch {
-    // npx cache dir doesn't exist or not readable
-  }
-  return cleared;
-}
-
-const FALLBACK_MSG = (old: string, latest: string) =>
-  `Update available: v${old} → v${latest}. ` +
-  "Run `npx brightspace-mcp-server@latest` or clear your npx cache to update.";
-
 export function initUpdateChecker(): void {
-  const installed = getInstalledVersion();
-
-  exec("npm view brightspace-mcp-server version", { timeout: 10000 }, (err, stdout) => {
-    if (err) return;
-    const latest = stdout.trim();
-    if (!latest || latest === installed) return;
-
-    if (isNpxCache()) {
-      clearAllNpxCaches()
-        .then((count) => {
-          notice =
-            `Auto-updated: cleared ${count} npx cache(s) (v${installed} → v${latest}). ` +
-            "The new version will be downloaded on next restart.";
-        })
-        .catch(() => {
-          notice = FALLBACK_MSG(installed, latest);
-        });
-    } else {
-      exec("npm install -g brightspace-mcp-server@latest", { timeout: 60000 }, (installErr) => {
-        if (installErr) {
-          notice = FALLBACK_MSG(installed, latest);
-        } else {
-          notice =
-            `Auto-updated from v${installed} to v${latest}. ` +
-            "Restart your MCP client to use the new version.";
-        }
-      });
-    }
-  });
+  // Intentionally does nothing. See file header.
 }
 
 export function getUpdateNotice(): string | null {
-  const result = notice;
-  notice = null;
-  return result;
+  return null;
 }
