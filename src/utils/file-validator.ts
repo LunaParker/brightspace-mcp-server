@@ -91,8 +91,49 @@ export function validateDownloadPath(
 }
 
 /**
+ * Number of bytes inspected when sniffing whether an undetectable buffer
+ * is UTF-8 text. Enough to catch binary garbage without decoding a
+ * potentially 50 MB buffer.
+ */
+const TEXT_SNIFF_BYTES = 4096;
+
+/**
+ * True when the buffer looks like UTF-8 text: no NUL bytes anywhere, and
+ * the first TEXT_SNIFF_BYTES decode with almost no invalid sequences or
+ * non-whitespace control characters. Deliberately tolerant of a UTF-8 BOM
+ * and non-ASCII characters (accents, smart quotes) — D2L serves HTML
+ * content pages with a leading BOM, and an ASCII-only check would reject
+ * every one of them.
+ */
+function looksLikeUtf8Text(buffer: Buffer): boolean {
+  if (buffer.length === 0) return false;
+  if (buffer.includes(0)) return false; // NUL byte → binary
+
+  const text = buffer.subarray(0, TEXT_SNIFF_BYTES).toString("utf8");
+  let total = 0;
+  let suspicious = 0;
+  for (const ch of text) {
+    total++;
+    const code = ch.codePointAt(0)!;
+    if (code === 0xfffd) {
+      // U+FFFD replacement character → invalid UTF-8 sequence
+      suspicious++;
+    } else if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+      suspicious++;
+    }
+  }
+  // Small tolerance: a sample cut at a multi-byte character boundary
+  // produces one trailing U+FFFD even for perfectly valid text.
+  return total > 0 && suspicious / total < 0.02;
+}
+
+/**
  * Validate file type using magic bytes (not extensions).
  * Prevents MIME type spoofing via filename manipulation.
+ *
+ * Text formats (HTML, CSV, plain text) have no magic bytes, so when
+ * file-type detects nothing we fall back to a UTF-8 text sniff and
+ * classify the buffer as text/html or text/plain.
  *
  * @param buffer - File contents to validate
  * @param allowedTypes - MIME types to allow (defaults to ALLOWED_MIME_TYPES)
@@ -115,16 +156,20 @@ export async function validateFileType(
     return { mime: detected.mime, ext: detected.ext };
   }
 
-  // Fallback for text files that file-type can't detect
-  // Check if buffer looks like text (no null bytes, mostly printable chars)
-  const isText =
-    !buffer.includes(0) && buffer.toString("utf8", 0, 512).match(/^[\x20-\x7E\n\r\t]*$/);
-
-  if (isText) {
-    // Allow common text MIME types
-    const textTypes = allowedTypes.filter((t) => t.startsWith("text/"));
-    if (textTypes.length > 0) {
-      // Default to text/plain for undetectable text files
+  // Fallback for text formats that file-type can't detect
+  if (looksLikeUtf8Text(buffer)) {
+    const sample = buffer
+      .subarray(0, TEXT_SNIFF_BYTES)
+      .toString("utf8")
+      .replace(/^\uFEFF/, ""); // strip BOM before sniffing markup
+    if (
+      /^\s*<(!doctype\b|html[\s>])/i.test(sample) &&
+      allowedTypes.includes("text/html")
+    ) {
+      return { mime: "text/html", ext: "html" };
+    }
+    if (allowedTypes.some((t) => t.startsWith("text/"))) {
+      // Default to text/plain for other undetectable text files
       return { mime: "text/plain", ext: "txt" };
     }
   }
