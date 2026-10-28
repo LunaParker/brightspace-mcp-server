@@ -1,5 +1,14 @@
 # Brightspace MCP Server — Entra ID SSO Fork
 
+> **IMPORTANT: this fork is archived.** Everything it added has since made its way into the upstream project, [RohanMuppa/brightspace-mcp-server][upstream], so you should use upstream instead (`npx -y brightspace-mcp-server@latest`). Upstream now signs in through Microsoft Entra ID without a saved password, which was the whole reason this fork existed in the first place.
+>
+> Two upstream pull requests were adapted directly from this fork, and their descriptions credit it:
+>
+> - **[#123](https://github.com/RohanMuppa/brightspace-mcp-server/pull/123)** lets `download_file` return a file inline when no `downloadPath` is given. Its design (including the rule against returning an `EmbeddedResource`, which Claude Desktop hands to a document pipeline that rejects many scanned PDFs) came from this fork's [`32fb5e5`](https://github.com/LunaParker/brightspace-mcp-server/commit/32fb5e5) and [`9701cd5`](https://github.com/LunaParker/brightspace-mcp-server/commit/9701cd5).
+> - **[#124](https://github.com/RohanMuppa/brightspace-mcp-server/pull/124)** adds the opt-in `D2L_CURRENT_ONLY` filter. It carries over this fork's date-window logic and its rule for excluding courses with neither a start nor an end date, from [`3c8858e`](https://github.com/LunaParker/brightspace-mcp-server/commit/3c8858e) and [`0a9c77b`](https://github.com/LunaParker/brightspace-mcp-server/commit/0a9c77b).
+>
+> The rest of the fork (headless token refresh, instructor dropbox attachments, and the fixes for HTML topic downloads) is covered upstream as well; I tested upstream against my own college's Brightspace in October 2026 before archiving this one. The original README follows, unchanged, for reference.
+
 This is a local fork of [RohanMuppa/brightspace-mcp-server][upstream] adapted for
 Brightspace (D2L) installations that delegate authentication to **Microsoft
 Entra ID** (Azure AD) — notably most Canadian post-secondary Brightspace
